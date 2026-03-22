@@ -260,7 +260,7 @@ class WebTile(QFrame):
 
         self.back_button.clicked.connect(self._web_view.back)
         self.forward_button.clicked.connect(self._web_view.forward)
-        self.reload_button.clicked.connect(self._web_view.reload)
+        self.reload_button.clicked.connect(self._web_view.clear)
         self.zoom_out_button.clicked.connect(lambda: self.adjust_zoom(-ZOOM_STEP))
         self.zoom_in_button.clicked.connect(lambda: self.adjust_zoom(ZOOM_STEP))
         self.memory_button.clicked.connect(lambda: self.memory_requested.emit(self.tile_id))
@@ -295,6 +295,9 @@ class WebTile(QFrame):
     def load_from_browser_input(self) -> None:
         self._navigate_from_text(self.browser_url_edit.text())
 
+    def open_url_text(self, raw_text: str) -> None:
+        self._navigate_from_text(raw_text)
+
     def reload_current(self) -> None:
         if self._web_view is not None and self._state.has_content:
             self._web_view.reload()
@@ -320,7 +323,6 @@ class WebTile(QFrame):
         if not result.ok:
             self.show_input_error(result.error)
             return
-
         self.clear_errors()
         self._ensure_browser_page()
         self.stack.setCurrentWidget(self._browser_container)
@@ -421,7 +423,7 @@ class WebTile(QFrame):
             self.clear_errors()
         else:
             self._state.status = TileVisualStatus.ERROR
-            self._state.error_message = "Le chargement a échoué ou la page est inaccessible."
+            self._state.error_message = "Le chargement a échoté ou la page est inaccessible."
             self.error_banner.setText(self._state.error_message)
             self.error_banner.show()
 
