@@ -8,9 +8,9 @@ from enum import Enum
 from PySide6.QtCore import QObject, QTimer
 from PySide6.QtWidgets import QApplication, QWidget
 
-try:  # pragma: no cover - optional runtime backend
+try:  # pragma: no cover
     from PySide6.QtTextToSpeech import QTextToSpeech
-except Exception:  # pragma: no cover - optional runtime backend
+except Exception:  # pragma: no cover
     QTextToSpeech = None
 
 
@@ -65,7 +65,7 @@ class AudioFeedbackManager(QObject):
         clean = message.strip()
         if clean:
             self._messages.appendleft(clean)
-        self._play_pattern(exent)
+        self._play_pattern(event)
         self._speak_if_needed(event, clean)
 
     def latest_messages(self, limit: int = 10) -> list[str]:
@@ -74,12 +74,10 @@ class AudioFeedbackManager(QObject):
     def _play_pattern(self, event: AudioEvent) -> None:
         if not self.state.sound_enabled:
             return
-
         now = time.monotonic()
         if now - self._last_sound_at < self._min_sound_gap_seconds:
             return
         self._last_sound_at = now
-
         pattern = {
             AudioEvent.SUCCESS: [0],
             AudioEvent.ERROR: [0, 180],
@@ -87,20 +85,18 @@ class AudioFeedbackManager(QObject):
             AudioEvent.TASK_COMPLETE: [0, 220],
             AudioEvent.API_CONNECTED: [0],
         }.get(event, [0])
-
         for delay in pattern:
             QTimer.singleShot(delay, QApplication.beep)
 
     def _speak_if_needed(self, event: AudioEvent, message: str) -> None:
         if not self.state.voice_enabled or not self.voice_available or not message:
             return
-
         should_speak = (
             (event is AudioEvent.BLOCKED and self.state.speak_blocked)
             or (event is AudioEvent.TASK_COMPLETE and self.state.speak_task_complete)
             or (event is AudioEvent.API_CONNECTED and self.state.speak_api_connected)
         )
-        if not should_speak: 
+        if not should_speak:
             return
         now = time.monotonic()
         if now - self._last_voice_at < self._min_voice_gap_seconds:
