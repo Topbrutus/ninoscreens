@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Any, Mapping
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCloseEvent
@@ -21,11 +22,14 @@ from app.config import (
     DEFAULT_WINDOW_SIZE,
     MEMORY_SLOT_BUTTON_SIZE,
     MINIMUM_WINDOW_SIZE,
+    PALETTE,
     SESSION_SAVE_DEBOUNCE_MS,
     TILE_COUNT,
 )
+from app.direct_control import ActionRecord, AgentCockpitController, AgentCommand, BlockedAction, CommandOutcome
 from app.session_store import load_session_payload, save_session_payload, serialize_app_state
 from app.state import AppState, TileState
+from app.url_utils import normalize_user_url
 from app.web_profile import build_shared_profile
 from app.widgets.dashboard_grid import DashboardGrid
 from app.widgets.focus_view import FocusView
@@ -47,6 +51,7 @@ class MainWindow(QMainWindow):
         self.memory_slot_buttons: dict[int, QPushButton] = {}
         self._focused_tile_id: int | None = None
         self._restoring_session = False
+        self._last_agent_record: ActionRecord | None = None
 
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
@@ -55,6 +60,8 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._build_tiles()
+        self._build_agent_controller()
+        self._set_agent_status("🤖 Contrôle direct prêt — aucune action exécutée.", tone="info")
         self._restore_session()
         self._sync_focus_flags()
         self._refresh_global_labels()
@@ -120,6 +127,10 @@ class MainWindow(QMainWindow):
 
         root.addWidget(self.top_bar)
 
+        self.agent_status_label = QLabel("")
+        self.agent_status_label.setWordWrap(True)
+        root.addWidget(self.agent_status_label)
+
         self.stack = QStackedWidget()
         self.grid_view = DashboardGrid()
         self.focus_view = FocusView()
@@ -128,6 +139,150 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.grid_view)
         self.stack.addWidget(self.focus_view)
         root.addWidget(self.stack, 1)
+
+    def _build_agent_controller(self) -> None:
+        self.agent_controller = AgentCockpitController(
+            tile_count=TILE_COUNT,
+            handlers={
+                "open_url": self._handle_agent_open_url,
+                "focus_tile": self._handle_agent_focus_tile,
+                "close_tile": self._handle_agent_close_tile,
+                "load_memory": self._handle_agent_load_memory,
+                "read_state": self._handle_agent_read_state,
+            },
+            activity_callback=self._on_agent_activity,
+        )
+
+    def execute_agent_command(self, command: AgentCommand | Mapping[str, Any]) -> ActionRecord:
+        return self.agent_controller.execute(command)
+
+    def get_agent_state_snapshot(self) -> dict[str, Any]:
+        tiles_snapshot: list[dict[str, Any]] = []
+        for tile_id, tile in sorted(self.tiles.items()):
+            state = tile.state
+            tiles_snapshot.append(
+                {
+                    "tile_number": tile_id + 1,
+                    "has_content": state.has_content,
+                    "is_loading": state.is_loading,
+                    "is_focused": tile_id == self._focused_tile_id,
+                    "status": state.status.value,
+                    "title": state.display_title,
+                    "current_url": state.current_url,
+                    "domain": state.domain,
+                    "zoom_factor": state.zoom_factor,
+                    "error_message": state.error_message,
+                }
+            )
+
+        return {
+            "mode": "focus" if self._focused_tile_id is not None else "grid",
+            "focused_tile_number": self._focused_tile_id + 1 if self._focused_tile_id is not None else None,
+            "is_fullscreen": self.isFullScreen(),
+            "loaded_count": sum(1 for tile in self.app_state.tiles if tile.has_content),
+            "loading_count": sum(1 for tile in self.app_state.tiles if tile.is_loading),
+            "tiles": tiles_snapshot,
+            "recent_activity": [self._serialize_action_record(record) for record in self.agent_controller.recent_activity(10)],
+        }
+
+    def _serialize_action_record(self, record: ActionRecord) -> dict[str, Any]:
+        return {
+            "action_id": record.action_id,
+            "timestamp": record.timestamp,
+            "command_name": record.command_name,
+            "outcome": record.outcome.value,
+            "message": record.message,
+            "tile_number": record.tile_number,
+            "human_validation_required": record.human_validation_required,
+            "details": dict(record.details),
+        }
+
+    def _set_agent_status(self, text: str, *, tone: str) -> None:
+        colors = {
+            "info": PALETTE.text_secondary,
+            "success": PALETTE.success,
+            "blocked": PALETTE.warning,
+            "error": PALETTE.error,
+        }
+        color = colors.get(tone, PALETTE.text_secondary)
+        self.agent_status_label.setText(text)
+        self.agent_status_label.setStyleSheet(f"color: {color}; font-weight: 600;")
+
+    def _on_agent_activity(self, record: ActionRecord) -> None:
+        self._last_agent_record = record
+        if record.outcome is CommandOutcome.SUCCESS:
+            tone = "success"
+            prefix = "✅"
+        elif record.outcome is CommandOutcome.BLOCKED:
+            tone = "blocked"
+            prefix = "⚔️"
+        else:
+            tone = "error"
+            prefix = "🛑"
+
+        suffix = " — validation humaine requise" if record.human_validation_required else ""
+        self._set_agent_status(f"{prefix} {record.message}{suffix}", tone=tone)
+        self.agent_status_label.setToolTip(
+            f"{record.timestamp} • {record.command_name}"
+            + (f" • carreau {record.tile_number}" if record.tile_number is not None else "")
+        )
+
+    def _tile_from_command(self, command: AgentCommand) -> tuple[int, WebTile]:
+        assert command.tile_number is not None
+        tile_id = command.tile_number - 1
+        return tile_id, self.tiles[tile_id]
+
+    def _handle_agent_open_url(self, command: AgentCommand) -> dict[str, Any]:
+        tile_id, tile = self._tile_from_command(command)
+        result = normalize_user_url(command.url)
+        if not result.ok:
+            raise BlockedAction(
+                result.error,
+                human_validation_required=False,
+                details={"reason": "invalid_url"},
+            )
+
+        tile.open_url_text(result.normalized_text)
+        return {"message": f"URL ouverte dans le carreau {command.tile_number}.", "tile_id": tile_id, "url": result.normalized_text}
+
+    def _handle_agent_focus_tile(self, command: AgentCommand) -> dict[str, Any]:
+        tile_id, tile = self._tile_from_command(command)
+        if not tile.state.has_content:
+            raise BlockedAction(
+                f"Impossible de mettre le carreau {command.tile_number} en focus : il est vide.",
+                human_validation_required=False,
+                details={"reason": "empty_tile"},
+            )
+
+        self.enter_focus_mode(tile_id)
+        return {"message": f"Carreau {command.tile_number} mis en focus.", "tile_id": tile_id}
+
+    def _handle_agent_close_tile(self, command: AgentCommand) -> dict[str, Any]:
+        tile_id, tile = self._tile_from_command(command)
+        if not tile.state.has_content:
+            return {"message": f"Carreau {command.tile_number} déjà vide.", "tile_id": tile_id}
+
+        tile.reset_to_empty()
+        if self._focused_tile_id == tile_id:
+            self.exit_focus_mode()
+
+        return {"message": f"Carreau {command.tile_number} fermé.", "tile_id": tile_id}
+
+    def _handle_agent_load_memory(self, command: AgentCommand) -> dict[str, Any]:
+        tile_id, tile = self._tile_from_command(command)
+        if not tile.state.has_content:
+            raise BlockedAction(
+                f"Aucune page mémorisée dans le carreau {command.tile_number}.",
+                human_validation_required=False,
+                details={"reason": "memory_slot_empty"},
+            )
+
+        self.activate_memory_slot(tile_id)
+        return {"message": f"Page mémorisée rechargée dans le carreau {command.tile_number}.", "tile_id": tile_id}
+
+    def _handle_agent_read_state(self, command: AgentCommand) -> dict[str, Any]:
+        snapshot = self.get_agent_state_snapshot()
+        return {"message": "État complet des carreaux lu.", "snapshot": snapshot}
 
     def _build_tiles(self) -> None:
         for tile_id in range(TILE_COUNT):
@@ -144,7 +299,6 @@ class MainWindow(QMainWindow):
         if not payload:
             self._update_memory_buttons()
             return
-
         self._restoring_session = True
 
         window_payload = payload.get("window", {})
@@ -329,4 +483,4 @@ class MainWindow(QMainWindow):
     def _refresh_global_labels(self) -> None:
         loaded = sum(1 for tile in self.app_state.tiles if tile.has_content)
         loading = sum(1 for tile in self.app_state.tiles if tile.is_loading)
-        self.summary_label.setText(f"{loaded}/9 chargés — {loading} en chargement")
+        self.summary_label.setText(f"{loaded}/{TILE_COUNT} chargés – {loading} en chargement")
