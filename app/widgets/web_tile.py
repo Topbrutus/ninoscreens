@@ -118,7 +118,7 @@ class WebTile(QFrame):
 
     def set_toolbar_focus_mode(self, in_focus_mode: bool) -> None:
         self._toolbar_focus_mode = in_focus_mode
-        if self._browser_container is None:
+        if self._browser_container is not None:
             return
 
         if in_focus_mode:
@@ -158,7 +158,7 @@ class WebTile(QFrame):
         buttons_row.setContentsMargins(0, 0, 0, 0)
         buttons_row.setSpacing(8)
 
-        self.empty_load_button = QPushButton("🚀 Charger")
+        self.empty_load_button = QPushButton("🚠 Charger")
         self.empty_load_button.setProperty("role", "accent")
         self.empty_load_button.clicked.connect(self.load_from_empty_input)
 
@@ -209,7 +209,7 @@ class WebTile(QFrame):
         header_layout.setContentsMargins(8, 6, 8, 6)
         header_layout.setSpacing(4)
 
-        self.back_button = QPushButton("⬅️")
+        self.back_button = QPushButton("⬅���")
         self.forward_button = QPushButton("➡️")
         self.reload_button = QPushButton("🔄")
         self.zoom_out_button = QPushButton("➖")
@@ -260,7 +260,7 @@ class WebTile(QFrame):
 
         self.back_button.clicked.connect(self._web_view.back)
         self.forward_button.clicked.connect(self._web_view.forward)
-        self.reload_button.clicked.connect(self._web_view.clear)
+        self.reload_button.clicked.connect(self._web_view.reload)
         self.zoom_out_button.clicked.connect(lambda: self.adjust_zoom(-ZOOM_STEP))
         self.zoom_in_button.clicked.connect(lambda: self.adjust_zoom(ZOOM_STEP))
         self.memory_button.clicked.connect(lambda: self.memory_requested.emit(self.tile_id))
@@ -423,7 +423,7 @@ class WebTile(QFrame):
             self.clear_errors()
         else:
             self._state.status = TileVisualStatus.ERROR
-            self._state.error_message = "Le chargement a échoté ou la page est inaccessible."
+            self._state.error_message = "Le chargement a échoué ou la page est inaccessible."
             self.error_banner.setText(self._state.error_message)
             self.error_banner.show()
 
