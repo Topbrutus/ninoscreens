@@ -51,5 +51,5 @@ class SecretStore:
         try:
             keyring.delete_password(self.namespace, account)
         except KeyringError as exc:
-            return SecretStoreResult(False, fÉchec de suppression : {exc}")
+            return SecretStoreResult(False, f"Échec de suppression : {exc}")
         return SecretStoreResult(True, "Clé supprimée du trousseau sécurisé.")
