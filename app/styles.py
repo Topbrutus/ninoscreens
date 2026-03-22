@@ -21,7 +21,7 @@ def build_app_stylesheet() -> str:
         color: {p.text_primary};
     }}
 
-    QLineEdit {{
+    QLineEdit, QComboBox {{
         background: {p.panel_bg_alt};
         border: 1px solid {p.panel_border};
         border-radius: 7px;
@@ -30,7 +30,7 @@ def build_app_stylesheet() -> str:
         selection-background-color: {p.accent};
     }}
 
-    QLineEdit:focus {{
+    QLineEdit:focus, ComboBox:focus {{
         border: 1px solid {p.accent};
     }}
 
@@ -91,6 +91,31 @@ def build_app_stylesheet() -> str:
         border-color: #a34a4a;
     }}
 
+    QPushButton[role="api"][connectionState="idle"] {{
+        background: #3a3f46;
+        border-color: #596575;
+    }}
+
+    QPushButton[role="api"][connectionState="connected"] {{
+        background: #5a531f;
+        border-color: #d2bb34;
+    }}
+
+    QPushButton[role="api"][connectionState="error"] {{
+        background: #4a2626;
+        border-color: #e74c3c;
+    }}
+
+    QPushButton[role="audio"][active="true"] {{
+        background: #21415f;
+        border-color: #3b6e9e;
+    }}
+
+    QPushButton[role="audio"][active="false"] {{
+        background: #3a3f46;
+        border-color: #596575;
+    }}
+
     QPushButton:hover, QToolButton:hover {{
         background: {p.button_hover};
     }}
@@ -148,11 +173,6 @@ def build_app_stylesheet() -> str:
         border-bottom: 1px solid {p.panel_border};
     }}
 
-    QLabel#TilePrompt {{
-        color: {p.text_secondary};
-        font-size: 15px;
-    }}
-
     QLabel#SecondaryText {{
         color: {p.text_secondary};
     }}
@@ -169,7 +189,8 @@ def build_app_stylesheet() -> str:
 
     QFrame#FocusPanel,
     QFrame#ThumbnailRail,
-    QFrame#TopBar {{
+    QFrame#TopBar,
+    QFrame#ControlPanel {{
         background: {p.panel_bg};
         border: 1px solid {p.panel_border};
         border-radius: 12px;
@@ -183,6 +204,10 @@ def build_app_stylesheet() -> str:
 
     QFrame[active="true"]#ThumbnailCard {{
         border: 1px solid {p.focus_border};
+    }}
+
+    QCheckBox {{
+        spacing: 8px;
     }}
 
     QScrollArea {{
