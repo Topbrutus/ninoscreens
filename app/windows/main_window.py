@@ -549,7 +549,7 @@ class MainWindow(QMainWindow):
         self._pending_api_key = ""
         self._set_api_button_state("idle")
         self._apply_api_panel_state()
-        self._set_agent_status("⚡ API �connectée.", tone="info")
+        self._set_agent_status("API disconnected.", tone="info")
 
     def activate_memory_slot(self, tile_id: int) -> None:
         self.enter_focus_mode(tile_id)
