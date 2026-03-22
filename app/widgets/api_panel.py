@@ -47,7 +47,9 @@ class ApiConnectionPanel(QFrame):
         title = QLabel("Connexion API")
         title.setStyleSheet("font-weight: 700;")
 
-        description = QLabel("Cné masquée aprȨs validation. Stockage sécirisé utilisé seulement si disponible.")
+        description = QLabel(
+            "Clé masquée après validation. Stockage sécurisé utilisé seulement si disponible."
+        )
         description.setWordWrap(True)
         description.setObjectName("MutedText")
 
@@ -75,7 +77,7 @@ class ApiConnectionPanel(QFrame):
         form.addRow("Service", self.service_combo)
         form.addRow("Base URL", self.base_url_edit)
         form.addRow("Chemin test", self.test_path_edit)
-        form.addRow("Cné API", self.api_key_edit)
+        form.addRow("Clé API", self.api_key_edit)
         form.addRow("", self.remember_checkbox)
 
         buttons = QHBoxLayout()
@@ -84,6 +86,7 @@ class ApiConnectionPanel(QFrame):
 
         self.test_button = QPushButton("Tester et connecter")
         self.test_button.setProperty("role", "accent")
+
         self.disconnect_button = QPushButton("Déconnecter")
         self.disconnect_button.setProperty("role", "danger")
         self.disconnect_button.setEnabled(False)
@@ -108,6 +111,10 @@ class ApiConnectionPanel(QFrame):
 
         self._sync_definition_defaults()
 
+    @property
+    def current_service_id(self) -> str:
+        return str(self.service_combo.currentData())
+
     def _sync_definition_defaults(self) -> None:
         if self._building:
             return
@@ -117,10 +124,6 @@ class ApiConnectionPanel(QFrame):
         if not self.test_path_edit.text().strip():
             self.test_path_edit.setText(definition.default_test_path)
         self.status_label.setText(definition.description)
-
-    @property
-    def current_service_id(self) -> str:
-        return str(self.service_combo.currentData())
 
     def _emit_connect_requested(self) -> None:
         settings = ApiConnectionSettings(
@@ -135,7 +138,9 @@ class ApiConnectionPanel(QFrame):
         self.remember_checkbox.setEnabled(available)
         if not available:
             self.remember_checkbox.setChecked(False)
-            self.remember_checkbox.setToolTip("Aucun stockage sécurisé détecté : la clé restera seulement en mémoire.")
+            self.remember_checkbox.setToolTip(
+                "Aucun stockage sécurisé détecté : la clé restera seulement en mémoire."
+            )
         else:
             self.remember_checkbox.setToolTip("")
 
@@ -149,12 +154,13 @@ class ApiConnectionPanel(QFrame):
                 self.base_url_edit.setText(state.base_url)
             if state.test_path:
                 self.test_path_edit.setText(state.test_path)
+
             self.disconnect_button.setEnabled(state.connected)
             self.test_button.setText("Reconnecter" if state.connected else "Tester et connecter")
 
             if state.connected:
                 self.api_key_edit.clear()
-                self.api_key_edit.setPlaceholderText("Cné masquée et non réaffichée")
+                self.api_key_edit.setPlaceholderText("Clé masquée et non réaffichée")
             else:
                 self.api_key_edit.setPlaceholderText("Coller la clé API ici")
 
