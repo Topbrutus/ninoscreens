@@ -69,7 +69,8 @@ def mask_api_key(api_key: str) -> str:
         return ""
     if len(clean) <= 6:
         return "•" * len(clean)
-    return f"{clean[:3]}{'• * max(4, len(clean) - 6)}{clean[-3:]}"
+    hidden = "•" * max(4, len(clean) - 6)
+    return f"{clean[:3]}{hidden}{clean[-3:]}"
 
 
 def build_test_url(base_url: str, test_path: str) -> str:
@@ -150,7 +151,7 @@ def test_api_connection(settings: ApiConnectionSettings) -> ApiConnectionResult:
             base_url=base_url,
             requires_human_validation=True,
         )
-    except Exception as exc:  # pragma: no cover - runtime safety
+    except Exception as exc:  # pragma: no cover
         return ApiConnectionResult(
             ok=False,
             message=f"Erreur réseau interne : {exc}",
