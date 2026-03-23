@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from dataclasses import replace
@@ -34,7 +33,7 @@ from app.web_profile import build_shared_profile
 from app.widgets.api_panel import ApiConnectionPanel
 from app.widgets.audio_panel import AudioSettingsPanel
 from app.widgets.dashboard_grid import DashboardGrid
-From app.widgets.focus_view import FocusView
+from app.widgets.focus_view import FocusView
 from app.widgets.page_matrix import PageMatrix
 from app.widgets.run_workspace import RunWorkspace
 from app.widgets.web_tile import WebTile
@@ -60,7 +59,7 @@ class MainWindow(QMainWindow):
         self._save_timer.timeout.connect(self.save_session_now)
 
         self._memory_timer = QTimer(self)
-        self._memory_timer.setInterval(1500)
+        self._memory_timer.setInterval(2000)
         self._memory_timer.timeout.connect(self._refresh_memory_usage)
 
         self._build_ui()
@@ -94,7 +93,7 @@ class MainWindow(QMainWindow):
         self.window_title_label.setStyleSheet("font-size: 16px; font-weight: 700;")
         self.mode_label = QLabel("Page 1 / 3")
         self.mode_label.setObjectName("SecondaryText")
-        self.summary_label = QLabel("")
+        self.summary_label = QLabel""
         self.summary_label.setObjectName("MutedText")
 
         title_layout.addWidget(self.window_title_label)
@@ -199,9 +198,19 @@ class MainWindow(QMainWindow):
             tile.focus_requested.connect(self.enter_focus_mode)
             tile.grid_requested.connect(self.exit_focus_mode)
             self.tiles[tile_id] = tile
-            page_index = tile_id // TILES_PER_PAGE
+            page_index = self._tile_page_index(tile_id)
             slot_index = tile_id % TILES_PER_PAGE
             self.page_grids[page_index].place_tile(tile, slot_index)
+
+    def _tile_page_index(self, tile_id: int) -> int:
+        return max(0, min(PAGE_COUNT - 1, tile_id // TILES_PER_PAGE))
+
+    def _show_page_for_tile(self, tile_id: int) -> None:
+        self.app_state.current_page_index = self._tile_page_index(tile_id)
+        self.app_state.active_view = "tiles"
+        self.page_stack.setCurrentIndex(self.app_state.current_page_index)
+        if self._focused_tile_id is None:
+            self._show_active_workspace()
 
     def _tile_memory_mb(self, tile: WebTile) -> int:
         page = getattr(tile, "_page", None)
@@ -217,9 +226,18 @@ class MainWindow(QMainWindow):
         memory_mb = get_process_memory_mb(pid)
         return 0 if memory_mb is None else memory_mb
 
+    def _should_measure_tile_memory(self, tile_id: int) -> bool:
+        if self._focused_tile_id == tile_id:
+            return True
+        if self.app_state.active_view != "tiles":
+            return False
+        return self._tile_page_index(tile_id) == self.app_state.current_page_index
+
     def _refresh_memory_usage(self) -> None:
         changed = False
         for tile_id, tile in self.tiles.items():
+            if not self._should_measure_tile_memory(tile_id):
+                continue
             memory_mb = self._tile_memory_mb(tile)
             if tile.state.memory_mb != memory_mb:
                 tile.state.memory_mb = memory_mb
@@ -232,14 +250,18 @@ class MainWindow(QMainWindow):
 
     def activate_memory_slot(self, tile_id: int) -> None:
         tile_id = max(0, min(TILE_COUNT - 1, tile_id))
-        self.show_tile_page_for_tile(tile_id)
-        self.enter_focus_mode(tile_id)
+        self._show_page_for_tile(tile_id)
+        self._refresh_top_state()
+        QTimer.singleShot(0, lambda tid=tile_id: self.enter_focus_mode(tid))
 
     def show_tile_page(self, page_index: int) -> None:
         self.app_state.current_page_index = max(0, min(PAGE_COUNT - 1, page_index))
         self.app_state.active_view = "tiles"
         if self._focused_tile_id is None:
             self._show_active_workspace()
+        else:
+            self.page_stack.setCurrentIndex(self.app_state.current_page_index)
+        self._refresh_memory_usage()
         self._refresh_top_state()
         self.schedule_session_save()
 
@@ -250,18 +272,15 @@ class MainWindow(QMainWindow):
         self._refresh_top_state()
         self.schedule_session_save()
 
-    def show_tile_page_for_tile(self, tile_id: int) -> None:
-        self.app_state.current_page_index = tile_id // TILES_PER_PAGE
-        self.app_state.active_view = "tiles"
-        if self._focused_tile_id is None:
-            self._show_active_workspace()
-        self._refresh_top_state()
-
     def enter_focus_mode(self, tile_id: int) -> None:
         if tile_id not in self.tiles:
             return
         if self._focused_tile_id == tile_id and self.main_stack.currentWidget() is self.focus_view:
             return
+
+        self._show_page_for_tile(tile_id)
+        self.page_stack.setCurrentIndex(self._tile_page_index(tile_id))
+
         if self._focused_tile_id is None:
             self._detach_tile_from_grid(tile_id)
         else:
@@ -270,13 +289,14 @@ class MainWindow(QMainWindow):
 
         self._focused_tile_id = tile_id
         self.app_state.focused_tile_id = tile_id
-        self.app_state.current_page_index = tile_id // TILES_PER_PAGE
+        self.app_state.current_page_index = self._tile_page_index(tile_id)
         self.app_state.active_view = "tiles"
 
         tile = self.tiles[tile_id]
         self.focus_view.set_tile_widget(tile)
         self.main_stack.setCurrentWidget(self.focus_view)
         self._sync_focus_flags()
+        self._refresh_memory_usage()
         self._refresh_top_state()
         self.schedule_session_save()
 
@@ -286,16 +306,8 @@ class MainWindow(QMainWindow):
             return
         if tile_id == self._focused_tile_id:
             return
-        self._return_tile_to_grid(self._focused_tile_id)
-        self._detach_tile_from_grid(tile_id)
-        self._focused_tile_id = tile_id
-        self.app_state.focused_tile_id = tile_id
-        self.app_state.current_page_index = tile_id // TILES_PER_PAGE
-        self.focus_view.set_tile_widget(self.tiles[tile_id])
-        self.main_stack.setCurrentWidget(self.focus_view)
-        self._sync_focus_flags()
-        self._refresh_top_state()
-        self.schedule_session_save()
+        self._show_page_for_tile(tile_id)
+        QTimer.singleShot(0, lambda tid=tile_id: self.enter_focus_mode(tid))
 
     def exit_focus_mode(self, *_args) -> None:
         if self._focused_tile_id is None:
@@ -305,17 +317,22 @@ class MainWindow(QMainWindow):
         self._focused_tile_id = None
         self.app_state.focused_tile_id = None
         self._show_active_workspace()
+        self._refresh_memory_usage()
         self._sync_focus_flags()
         self._refresh_top_state()
         self.schedule_session_save()
 
     def _detach_tile_from_grid(self, tile_id: int) -> None:
-        self.page_grids[tile_id // TILES_PER_PAGE].remove_tile(self.tiles[tile_id])
+        tile = self.tiles[tile_id]
+        if tile.parent() is self.focus_view.main_panel:
+            return
+        self.page_grids[self._tile_page_index(tile_id)].remove_tile(tile)
 
     def _return_tile_to_grid(self, tile_id: int) -> None:
         tile = self.tiles[tile_id]
         self.focus_view.clear_tile_widget()
-        self.page_grids[tile_id // TILES_PER_PAGE].place_tile(tile, tile_id % TILES_PER_PAGE)
+        self.page_stack.setCurrentIndex(self._tile_page_index(tile_id))
+        self.page_grids[self._tile_page_index(tile_id)].place_tile(tile, tile_id % TILES_PER_PAGE)
 
     def _show_active_workspace(self) -> None:
         self.main_stack.setCurrentWidget(self.page_stack)
@@ -414,13 +431,12 @@ class MainWindow(QMainWindow):
 
         focused_tile_id = payload.get("focused_tile_id")
         self._restoring_session = False
+        self._show_active_workspace()
+        self._refresh_memory_usage()
+        self._refresh_top_state()
 
         if isinstance(focused_tile_id, int) and focused_tile_id in self.tiles:
             QTimer.singleShot(0, lambda tid=focused_tile_id: self.enter_focus_mode(tid))
-        else:
-            self._show_active_workspace()
-        self._refresh_memory_usage()
-        self._refresh_top_state()
 
     def on_tile_state_changed(self, state_object: object) -> None:
         state = state_object if isinstance(state_object, TileState) else None
