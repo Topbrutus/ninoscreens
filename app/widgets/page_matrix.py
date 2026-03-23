@@ -10,10 +10,10 @@ from PySide6.QtWidgets import (
     )
 
 
-from app.config import PAGE_COUNT, TILES_PER_PAGE
+from app.config import PAGE_COUNT, TILES_PER_PAGD
+from app.state import TileState, TileVisualStatus
 
 
-TILE_MARRIX_ROWS = 3
 TILING_COLUMNS = 12
 
 
@@ -45,6 +45,10 @@ class PageMatrix(QFrame):
             button.setProperty("compact", True)
             button.setProperty("role", "memory-slot")
             button.setProperty("slotIndex", slot_index)
+            button.setProperty("filled", False)
+            button.setProperty("loading", False)
+            button.setProperty("errored", False)
+            button.setProperty("active", False)
             button.setToolTip(f"Ouvrir le carreau {slot_index + 1}")
             button.clicked.connect(lambda _checked=False, idx=slot_index: self.slot_activated.emit(idx))
             row, column = divmod(slot_index, TILING_COLUMNS)
@@ -56,11 +60,26 @@ class PageMatrix(QFrame):
         self.run_button.setMinimumHeight(80)
         self.run_button.setProperty("compact", True)
         self.run_button.setProperty("role", "accent")
+        self.run_button.setProperty("active", False)
         self.run_button.setToolTip("Ouvrir la page RUN / Corvo")
         self.run_button.clicked.connect(lambda: self.run_activated.emit())
 
         root.addWidget(self.grid_host, 1)
         root.addWidget(self.run_button)
+
+    def set_slot_state(self, slot_index: int, state: TileState) -> None:
+        button = self.slot_buttons.get(slot_index)
+        if button is None:
+            return
+        button.setProperty("filled", bool(state.has_content))
+        button.setProperty("loading", bool(state.is_loading))
+        button.setProperty("errored", state.status is TileVisualStatus.ERROR)
+        if state.has_content:
+            button.setToolTip(state.display_title)
+        else:
+            button.setToolTip(f"Ouvrir le carreau {slot_index + 1}")
+        button.style().unpolish(button)
+        button.style().polish(button)
 
     def set_active_slot(self, slot_index: int | None, *, run_active: bool = False) -> None:
         for idx, button in self.slot_buttons.items():
@@ -70,3 +89,7 @@ class PageMatrix(QFrame):
         self.run_button.setProperty("active", run_active)
         self.run_button.style().unpolish(self.run_button)
         self.run_button.style().polish(self.run_button)
+
+    def refresh_all_slots(self, tiles: list[TileState]) -> None:
+        for slot_index, state in enumerate(tiles):
+            self.set_slot_state(slot_index, state)
