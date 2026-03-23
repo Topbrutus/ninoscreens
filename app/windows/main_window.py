@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import threading
@@ -18,17 +17,25 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.api_connectors import ApiConnectionResult, ApiConnectionSettings, build_test_url, get_service_definition, test_api_connection
+from app.api_connectors import (
+    ApiConnectionResult,
+    ApiConnectionSettings,
+    build_test_url,
+    get_service_definition,
+    test_api_connection,
+)
 from app.audio_feedback import AudioEvent, AudioFeedbackManager
 from app.config import (
     APP_MARGIN,
     APP_NAME,
     DEFAULT_WINDOW_SIZE,
-    MEMORY_SLOT_BUTTON_SIZE,
     MINIMUM_WINDOW_SIZE,
+    PAGE_COUNT,
     PALETTE,
+    RUN_PAGE_INDEX,
     SESSION_SAVE_DEBOUNCE_MS,
     TILE_COUNT,
+    TILES_PER_PAGE,
 )
 from app.direct_control import (
     ActionRecord,
@@ -45,6 +52,7 @@ from app.widgets.api_panel import ApiConnectionPanel, ApiPanelState
 from app.widgets.audio_panel import AudioSettingsPanel
 from app.widgets.dashboard_grid import DashboardGrid
 from app.widgets.focus_view import FocusView
+from app.widgets.run_workspace import RunWorkspace
 from app.widgets.web_tile import WebTile
 
 
@@ -60,7 +68,7 @@ class MainWindow(QMainWindow):
         self.app_state = AppState(window_size=DEFAULT_WINDOW_SIZE)
         self.profile = build_shared_profile(self)
         self.tiles: dict[int, WebTile] = {}
-        self.memory_slot_buttons: dict[int, QPushButton] = {}
+        self.page_buttons: dict[int, QPushButton] = {}
         self._focused_tile_id: int | None = None
         self._restoring_session = False
         self._last_agent_record: ActionRecord | None = None
@@ -119,36 +127,36 @@ class MainWindow(QMainWindow):
         self.window_title_label = QLabel(APP_NAME)
         self.window_title_label.setStyleSheet("font-size: 16px; font-weight: 700;")
 
-        self.mode_label = QLabel("Mode grille 3x3")
+        self.mode_label = QLabel("Page 1 / 3")
         self.mode_label.setObjectName("SecondaryText")
 
         self.summary_label = QLabel("")
         self.summary_label.setObjectName("MutedText")
 
-        self.memory_bar = QWidget()
-        memory_layout = QHBoxLayout(self.memory_bar)
-        memory_layout.setContentsMargins(0, 0, 0, 0)
-        memory_layout.setSpacing(6)
+        self.page_nav_bar = QWidget()
+        page_nav_layout = QHBoxLayout(self.page_nav_bar)
+        page_nav_layout.setContentsMargins(0, 0, 0, 0)
+        page_nav_layout.setSpacing(6)
 
-        for tile_id in range(TILE_COUNT):
-            button = QPushButton(str(tile_id + 1))
-            button.setFixedSize(MEMORY_SLOT_BUTTON_SIZE)
+        for page_index in range(PAGE_COUNT):
+            start = (page_index * TILES_PER_PAGE) + 1
+            end = start + TILES_PER_PAGE - 1
+            button = QPushButton(f"{start:02}-{end:02}")
             button.setProperty("compact", True)
             button.setProperty("role", "memory-slot")
-            button.setProperty("filled", False)
-            button.setProperty("active", False)
-            button.setToolTip(f"Carreau {tile_id + 1}")
-            button.clicked.connect(lambda _checked=False, tid=tile_id: self.activate_memory_slot(tid))
-            self.memory_slot_buttons[tile_id] = button
-            memory_layout.addWidget(button)
+            button.setToolTip(f"Afficher la page {page_index + 1} ({start} à {end})")
+            button.clicked.connect(lambda _checked=False, idx=page_index: self.show_tile_page(idx))
+            self.page_buttons[page_index] = button
+            page_nav_layout.addWidget(button)
 
-        self.reload_all_button = QPushButton("🔄 Tout")
-        self.reload_all_button.setProperty("compact", True)
-        self.reload_all_button.setProperty("role", "memory-slot")
-        self.reload_all_button.clicked.connect(self.reload_all_tiles)
-        memory_layout.addWidget(self.reload_all_button)
+        self.run_button = QPushButton("RUN")
+        self.run_button.setProperty("compact", True)
+        self.run_button.setProperty("role", "accent")
+        self.run_button.setToolTip("Ouvrir la page RUN / Corvo")
+        self.run_button.clicked.connect(self.show_run_page)
+        page_nav_layout.addWidget(self.run_button)
 
-        self.audio_button = QPushButton("🔊 Audio")
+        self.audio_button = QPushButton("🔅 Audio")
         self.audio_button.setProperty("compact", True)
         self.audio_button.setProperty("role", "audio")
         self.audio_button.clicked.connect(self._toggle_audio_panel)
@@ -166,7 +174,7 @@ class MainWindow(QMainWindow):
         top_layout.addSpacing(8)
         top_layout.addWidget(self.mode_label)
         top_layout.addStretch(1)
-        top_layout.addWidget(self.memory_bar, 0, Qt.AlignmentFlag.AlignHCenter)
+        top_layout.addWidget(self.page_nav_bar, 0, Qt.AlignmentFlag.AlignHCenter)
         top_layout.addStretch(1)
         top_layout.addWidget(self.summary_label)
         top_layout.addWidget(self.audio_button)
@@ -198,14 +206,33 @@ class MainWindow(QMainWindow):
         self.agent_status_label.setWordWrap(True)
         root.addWidget(self.agent_status_label)
 
-        self.stack = QStackedWidget()
-        self.grid_view = DashboardGrid()
+        self.main_stack = QStackedWidget()
+
+        self.page_stack = QStackedWidget()
+        self.page_grids: list[DashboardGrid] = []
+
+        for page_index in range(PAGE_COUNT):
+            page = QWidget()
+            layout = QVBoxLayout(page)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+
+            grid = DashboardGrid()
+            layout.addWidget(grid, 1)
+            self.page_grids.append(grid)
+            self.page_stack.addWidget(page)
+
+        self.run_workspace = RunWorkspace()
+        self.run_workspace.prompt_submitted.connect(self._on_run_prompt_submitted)
+        self.page_stack.addWidget(self.run_workspace)
+
         self.focus_view = FocusView()
         self.focus_view.tile_switch_requested.connect(self.switch_focus_tile)
 
-        self.stack.addWidget(self.grid_view)
-        self.stack.addWidget(self.focus_view)
-        root.addWidget(self.stack, 1)
+        self.main_stack.addWidget(self.page_stack)
+        self.main_stack.addWidget(self.focus_view)
+
+        root.addWidget(self.main_stack, 1)
 
     def _build_tiles(self) -> None:
         for tile_id in range(TILE_COUNT):
@@ -214,8 +241,11 @@ class MainWindow(QMainWindow):
             tile.memory_requested.connect(self.save_session_now)
             tile.focus_requested.connect(self.enter_focus_mode)
             tile.grid_requested.connect(self.exit_focus_mode)
+
             self.tiles[tile_id] = tile
-            self.grid_view.place_tile(tile, tile_id)
+            page_index = tile_id // TILES_PER_PAGE
+            slot_index = tile_id % TILES_PER_PAGE
+            self.page_grids[page_index].place_tile(tile, slot_index)
 
     def _build_agent_controller(self) -> None:
         self.agent_controller = AgentCockpitController(
@@ -240,6 +270,7 @@ class MainWindow(QMainWindow):
             tiles_snapshot.append(
                 {
                     "tile_number": tile_id + 1,
+                    "page_number": (tile_id // TILES_PER_PAGE) + 1,
                     "has_content": state.has_content,
                     "is_loading": state.is_loading,
                     "is_focused": tile_id == self._focused_tile_id,
@@ -252,8 +283,11 @@ class MainWindow(QMainWindow):
                 }
             )
 
+        active_view = "focus" if self._focused_tile_id is not None else self.app_state.active_view
         return {
-            "mode": "focus" if self._focused_tile_id is not None else "grid",
+            "mode": active_view,
+            "current_page_index": self.app_state.current_page_index,
+            "current_page_number": self.app_state.current_page_index + 1,
             "focused_tile_number": self._focused_tile_id + 1 if self._focused_tile_id is not None else None,
             "is_fullscreen": self.isFullScreen(),
             "api": {
@@ -293,6 +327,7 @@ class MainWindow(QMainWindow):
         color = colors.get(tone, PALETTE.text_secondary)
         self.agent_status_label.setText(text)
         self.agent_status_label.setStyleSheet(f"color: {color}; font-weight: 600;")
+        self.run_workspace.append_system_message(text, tone=tone)
 
     def _on_agent_activity(self, record: ActionRecord) -> None:
         self._last_agent_record = record
@@ -324,6 +359,7 @@ class MainWindow(QMainWindow):
 
     def _handle_agent_open_url(self, command: AgentCommand) -> dict[str, Any]:
         tile_id, tile = self._tile_from_command(command)
+        self.show_tile_page_for_tile(tile_id)
         tile.open_url_text(command.url)
         if tile.state.error_message:
             raise BlockedAction(
@@ -361,7 +397,7 @@ class MainWindow(QMainWindow):
                 human_validation_required=False,
                 details={"reason": "memory_slot_empty"},
             )
-        self.activate_memory_slot(tile_id)
+        self.enter_focus_mode(tile_id)
         return {"message": f"Page mémorisée rechargée dans le carreau {command.tile_number}.", "tile_id": tile_id}
 
     def _handle_agent_read_state(self, _command: AgentCommand) -> dict[str, Any]:
@@ -393,7 +429,7 @@ class MainWindow(QMainWindow):
     def _refresh_audio_button(self) -> None:
         audio_active = self.audio_feedback.state.sound_enabled or self.audio_feedback.state.voice_enabled
         self.audio_button.setProperty("active", audio_active)
-        self.audio_button.setText("🔂 Audio" if audio_active else "🔇 Audio")
+        self.audio_button.setText("🔄 Audio" if audio_active else "🔅 Audio")
         self.audio_button.style().unpolish(self.audio_button)
         self.audio_button.style().polish(self.audio_button)
 
@@ -526,211 +562,4 @@ class MainWindow(QMainWindow):
             self._api_status_text = result.message
             self._api_secured_storage_used = False
             self._api_session_key = ""
-            self._set_api_button_state("error")
-            tone = "blocked" if result.requires_human_validation else "error"
-            self._set_agent_status(f"⚔️ {result.message}", tone=tone)
-            self.audio_feedback.notify(
-                AudioEvent.BLOCKED if result.requires_human_validation else AudioEvent.ERROR,
-                result.message,
-            )
-
-        self._pending_api_key = ""
-        self._apply_api_panel_state()
-
-    def _disconnect_api(self) -> None:
-        account = self._build_secret_account(self._api_service_id, self._api_base_url)
-        if self.secret_store.is_available:
-            self.secret_store.delete_api_key(account)
-        self._api_connected = False
-        self._api_session_key = ""
-        self._api_key_hint = ""
-        self._api_secured_storage_used = False
-        self._api_status_text = "API déconnectée."
-        self._pending_api_key = ""
-        self._set_api_button_state("idle")
-        self._apply_api_panel_state()
-        self._set_agent_status("API disconnected.", tone="info")
-
-    def activate_memory_slot(self, tile_id: int) -> None:
-        self.enter_focus_mode(tile_id)
-
-    def reload_all_tiles(self) -> None:
-        for tile in self.tiles.values():
-            tile.reload_current()
-
-    def enter_focus_mode(self, tile_id: int) -> None:
-        if self._focused_tile_id == tile_id and self.stack.currentWidget() is self.focus_view:
-            return
-        if self._focused_tile_id is None:
-            self._detach_tile_from_grid(tile_id)
-        else:
-            self._return_tile_to_grid(self._focused_tile_id)
-            self._detach_tile_from_grid(tile_id)
-
-        self._focused_tile_id = tile_id
-        self.app_state.focused_tile_id = tile_id
-
-        tile = self.tiles[tile_id]
-        self.focus_view.set_tile_widget(tile)
-        self.stack.setCurrentWidget(self.focus_view)
-        self._sync_focus_flags()
-        self.focus_view.rail.refresh(self.app_state.tiles, tile_id)
-        self.mode_label.setText("Mode focus")
-        self._refresh_global_labels()
-        self.schedule_session_save()
-
-    def switch_focus_tile(self, tile_id: int) -> None:
-        if self._focused_tile_id is None:
-            self.enter_focus_mode(tile_id)
-            return
-        if tile_id == self._focused_tile_id:
-            return
-
-        self._return_tile_to_grid(self._focused_tile_id)
-        self._detach_tile_from_grid(tile_id)
-
-        self._focused_tile_id = tile_id
-        self.app_state.focused_tile_id = tile_id
-
-        tile = self.tiles[tile_id]
-        self.focus_view.set_tile_widget(tile)
-        self.stack.setCurrentWidget(self.focus_view)
-        self._sync_focus_flags()
-        self.focus_view.rail.refresh(self.app_state.tiles, tile_id)
-        self._refresh_global_labels()
-        self.schedule_session_save()
-
-    def exit_focus_mode(self, *_args) -> None:
-        if self._focused_tile_id is None:
-            return
-
-        self._return_tile_to_grid(self._focused_tile_id)
-        self.focus_view.clear_tile_widget()
-        self._focused_tile_id = None
-        self.app_state.focused_tile_id = None
-        self.stack.setCurrentWidget(self.grid_view)
-        self._sync_focus_flags()
-        self.mode_label.setText("Mode grille 3x3")
-        self._refresh_global_labels()
-        self.schedule_session_save()
-
-    def _detach_tile_from_grid(self, tile_id: int) -> None:
-        self.grid_view.remove_tile(self.tiles[tile_id])
-
-    def _return_tile_to_grid(self, tile_id: int) -> None:
-        tile = self.tiles[tile_id]
-        self.focus_view.clear_tile_widget()
-        self.grid_view.place_tile(tile, tile_id)
-
-    def _sync_focus_flags(self) -> None:
-        in_focus_view = self.stack.currentWidget() is self.focus_view
-        for tile_id, tile in self.tiles.items():
-            is_active_focus_tile = tile_id == self._focused_tile_id
-            tile.set_focus_flag(is_active_focus_tile)
-            tile.set_toolbar_focus_mode(in_focus_view and is_active_focus_tile)
-
-        self.app_state.tiles = [replace(tile.state) for _, tile in sorted(self.tiles.items())]
-        self.focus_view.rail.refresh(self.app_state.tiles, self._focused_tile_id)
-        self._update_memory_buttons()
-
-    def _restore_session(self) -> None:
-        payload = load_session_payload()
-        if not payload:
-            self._update_memory_buttons()
-            return
-
-        self._restoring_session = True
-        window_payload = payload.get("window", {})
-        width = int(window_payload.get("width", DEFAULT_WINDOW_SIZE.width()))
-        height = int(window_payload.get("height", DEFAULT_WINDOW_SIZE.height()))
-        self.resize(max(width, MINIMUM_WINDOW_SIZE.width()), max(height, MINIMUM_WINDOW_SIZE.height()))
-        self.app_state.window_size = self.size()
-
-        for tile_payload in payload.get("tiles", []):
-            tile_id = tile_payload.get("tile_id")
-            if not isinstance(tile_id, int) or tile_id not in self.tiles:
-                continue
-            if tile_payload.get("has_content"):
-                current_url = str(tile_payload.get("current_url", "")).strip()
-                zoom_factor = float(tile_payload.get("zoom_factor", 1.0))
-                self.tiles[tile_id].restore_from_session(current_url=current_url, zoom_factor=zoom_factor)
-
-        focused_tile_id = payload.get("focused_tile_id")
-        self._restoring_session = False
-
-        if isinstance(focused_tile_id, int) and focused_tile_id in self.tiles:
-            QTimer.singleShot(0, lambda tid=focused_tile_id: self.enter_focus_mode(tid))
-
-        self._update_memory_buttons()
-
-    def on_tile_state_changed(self, state_object: object) -> None:
-        state = state_object if isinstance(state_object, TileState) else None
-        if state is None:
-            return
-
-        self.app_state.tiles[state.tile_id] = state
-        if self._focused_tile_id is not None:
-            self.focus_view.rail.refresh(self.app_state.tiles, self._focused_tile_id)
-
-        self._refresh_global_labels()
-        self._update_memory_buttons()
-
-        if not self._restoring_session:
-            self.schedule_session_save()
-
-    def _update_memory_buttons(self) -> None:
-        for tile_id, button in self.memory_slot_buttons.items():
-            tile_state = self.app_state.tiles[tile_id]
-            button.setProperty("filled", tile_state.has_content)
-            button.setProperty("active", tile_id == self._focused_tile_id)
-            if tile_state.has_content:
-                tooltip = f"{tile_id + 1} — {tile_state.display_title}\n{tile_state.current_url}"
-            else:
-                tooltip = f"{tile_id + 1} — Carreau vide"
-            button.setToolTip(tooltip)
-            button.style().unpolish(button)
-            button.style().polish(button)
-
-        any_loaded = any(tile.has_content for tile in self.app_state.tiles)
-        self.reload_all_button.setEnabled(any_loaded)
-
-    def toggle_global_fullscreen(self) -> None:
-        if self.isFullScreen():
-            self.showNormal()
-            self.app_state.is_fullscreen = False
-            self.fullscreen_button.setText("⛶ Plein écran")
-        else:
-            self.showFullScreen()
-            self.app_state.is_fullscreen = True
-            self.fullscreen_button.setText("🗗 Quitter le plein écran")
-        self._refresh_global_labels()
-        self.schedule_session_save()
-
-    def resizeEvent(self, event) -> None:
-        self.app_state.window_size = self.size()
-        self.schedule_session_save()
-        super().resizeEvent(event)
-
-    def closeEvent(self, event: QCloseEvent) -> None:
-        self.app_state.window_size = self.size()
-        self.save_session_now()
-        super().closeEvent(event)
-
-    def schedule_session_save(self) -> None:
-        if self._restoring_session:
-            return
-        self._save_timer.start()
-
-    def save_session_now(self, *_args) -> None:
-        self.app_state.tiles = [replace(tile.state) for _, tile in sorted(self.tiles.items())]
-        self.app_state.focused_tile_id = self._focused_tile_id
-        self.app_state.window_size = self.size()
-        save_session_payload(serialize_app_state(self.app_state))
-        self._refresh_global_labels()
-        self._update_memory_buttons()
-
-    def _refresh_global_labels(self) -> None:
-        loaded = sum(1 for tile in self.app_state.tiles if tile.has_content)
-        loading = sum(1 for tile in self.app_state.tiles if tile.is_loading)
-        api_suffix = " • API ⚡" if self._api_connected else ""
-        self.summary_label.setText(f"{loaded}/{TILE_COUNT} chargés — {loading} en chargement{api_suffix}")
+            self._api_button_state(self._api_connection_state)"
