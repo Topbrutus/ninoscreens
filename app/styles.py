@@ -76,18 +76,23 @@ def build_app_stylesheet() -> str:
         font-weight: 600;
     }}
 
-    QPushButton[filled="true"][role="memory-slot"], QToolButton[filled="true"][role="memory-slot"] {{
+    QPushButton[fillState="loaded"][role="memory-slot"], QToolButton[fillState="loaded"][role="memory-slot"] {{
         background: #1f4a74;
-        border-color: #4b86be;
     }}
 
-    QPushButton[loading="true"][role="memory-slot"], QToolButton[loading="true"][role="memory-slot"] {{
-        background: #5a3515;
-        border-color: #d2bb34;
+    QPushButton[fillState="empty"][role="memory-slot"], QToolButton[fillState="empty"][role="memory-slot"] {{
+        background: #1d3651;
     }}
 
-    QPushButton[errored="true"][role="memory-slot"], QToolButton[errored="true"][role="memory-slot"] {{
-        background: #4a2626;
+    QPushButton[borderState="ready"][role="memory-slot"], QToolButton[borderState="ready"][role="memory-slot"] {{
+        border-color: #4caf50;
+    }}
+
+    QPushButton[borderState="working"][role="memory-slot"], QToolButton[borderState="working"][role="memory-slot"] {{
+        border-color: #f1c40f;
+    }}
+
+    QPushButton[borderState="error"][role="memory-slot"], QToolButton[borderState="error"][role="memory-slot"] {{
         border-color: #e74c3c;
     }}
 
@@ -150,16 +155,16 @@ def build_app_stylesheet() -> str:
         background: #274563;
     }}
 
-    QPushButton[filled="true"][role="memory-slot"]:hover, QToolButton[filled="true"][role="memory-slot"]:hover {{
+    QPushButton[fillState="loaded"][role="memory-slot"]:hover, QToolButton[fillState="loaded"][role="memory-slot"]:hover {{
         background: #285b8b;
     }}
 
-    QPushButton[loading="true"][role="memory-slot"]:hover, QToolButton[loading="true"][role="memory-slot"]:hover {{
-        background: #694122;
+    QPushButton[borderState="working"][role="memory-slot"]:hover, QToolButton[borderState="working"][role="memory-slot"]:hover {{
+        border-color: #f6d365;
     }}
 
-    QPushButton[errored="true"][role="memory-slot"]:hover, QToolButton[errored="true"][role="memory-slot"]:hover {{
-        background: #633333;
+    QPushButton[borderState="error"][role="memory-slot"]:hover, QToolButton[borderState="error"][role="memory-slot"]:hover {{
+        border-color: #f0857a;
     }}
 
     QPushButton[active="true"][role="memory-slot"]:hover, QToolButton[active="true"][role="memory-slot"]:hover {{
