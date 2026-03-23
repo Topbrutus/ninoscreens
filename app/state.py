@@ -49,3 +49,5 @@ class AppState:
     focused_tile_id: Optional[int] = None
     is_fullscreen: bool = False
     window_size: QSize | None = None
+    current_page_index: int = 0
+    active_view: str = "tiles"
