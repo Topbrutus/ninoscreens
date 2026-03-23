@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QGridLayout, QWidget, QSizePolicy
+from PySide6.QtWidgets import QGridLayout, QSizePolicy, QWidget
 
 from app.config import APP_MARGIN, GRID_COLUMNS, GRID_ROWS, GRID_SPACING
 
 
 class DashboardGrid(QWidget):
-    """Responsive 3x3 grid that hosts all tile widgets."""
+    """Responsive 3x4 grid that hosts one page of tile widgets."""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -20,9 +20,9 @@ class DashboardGrid(QWidget):
         for col in range(GRID_COLUMNS):
             self.layout_.setColumnStretch(col, 1)
 
-    def place_tile(self, tile: QWidget, tile_id: int) -> None:
-        row = tile_id // GRID_COLUMNS
-        col = tile_id % GRID_COLUMNS
+    def place_tile(self, tile: QWidget, tile_slot: int) -> None:
+        row = tile_slot // GRID_COLUMNS
+        col = tile_slot % GRID_COLUMNS
         tile.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.layout_.addWidget(tile, row, col)
 
