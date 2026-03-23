@@ -81,6 +81,16 @@ def build_app_stylesheet() -> str:
         border-color: #4b86be;
     }}
 
+    QPushButton[loading="true"][role="memory-slot"], QToolButton[loading="true"][role="memory-slot"] {{
+        background: #5a3515;
+        border-color: #d2bb34;
+    }}
+
+    QPushButton[errored="true"][role="memory-slot"], QToolButton[errored="true"][role="memory-slot"] {{
+        background: #4a2626;
+        border-color: #e74c3c;
+    }}
+
     QPushButton[active="true"][role="memory-slot"], QToolButton[active="true"][role="memory-slot"] {{
         background: #2e6fa9;
         border-color: #8fc2ff;
@@ -144,6 +154,14 @@ def build_app_stylesheet() -> str:
         background: #285b8b;
     }}
 
+    QPushButton[loading="true"][role="memory-slot"]:hover, QToolButton[loading="true"][role="memory-slot"]:hover {{
+        background: #694122;
+    }}
+
+    QPushButton[errored="true"][role="memory-slot"]:hover, QToolButton[errored="true"][role="memory-slot"]:hover {{
+        background: #633333;
+    }}
+
     QPushButton[active="true"][role="memory-slot"]:hover, QToolButton[active="true"][role="memory-slot"]:hover {{
         background: #3b84c7;
     }}
@@ -190,7 +208,8 @@ def build_app_stylesheet() -> str:
     QFrame#FocusPanel,
     QFrame#ThumbnailRail,
     QFrame#TopBar,
-    QFrame#ControlPanel {{
+    QFrame#ControlPanel,
+    QFrame#PageMatrix {{
         background: {p.panel_bg};
         border: 1px solid {p.panel_border};
         border-radius: 12px;
