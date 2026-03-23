@@ -76,12 +76,20 @@ def build_app_stylesheet() -> str:
         font-weight: 600;
     }}
 
-    QPushButton[fillState="loaded"][role="memory-slot"], QToolButton[fillState="loaded"][role="memory-slot"] {{
+    QPushButton[fillState="empty"][role="memory-slot"], QToolButton[fillState="empty"][role="memory-slot"] {{
+        background: #1d3651;
+    }}
+
+    QPushButton[fillState="cool"][role="memory-slot"], QToolButton[fillState="cool"][role="memory-slot"] {{
         background: #1f4a74;
     }}
 
-    QPushButton[fillState="empty"][role="memory-slot"], QToolButton[fillState="empty"][role="memory-slot"] {{
-        background: #1d3651;
+    QPushButton[fillState="warm"][role="memory-slot"], QToolButton[fillState="warm"][role="memory-slot"] {{
+        background: #6a5212;
+    }}
+
+    QPushButton[fillState="hot"][role="memory-slot"], QToolButton[fillState="hot"][role="memory-slot"] {{
+        background: #6a1f1f;
     }}
 
     QPushButton[borderState="ready"][role="memory-slot"], QToolButton[borderState="ready"][role="memory-slot"] {{
@@ -155,8 +163,16 @@ def build_app_stylesheet() -> str:
         background: #274563;
     }}
 
-    QPushButton[fillState="loaded"][role="memory-slot"]:hover, QToolButton[fillState="loaded"][role="memory-slot"]:hover {{
+    QPushButton[fillState="cool"][role="memory-slot"]:hover, QToolButton[fillState="cool"][role="memory-slot"]:hover {{
         background: #285b8b;
+    }}
+
+    QPushButton[fillState="warm"][role="memory-slot"]:hover, QToolButton[fillState="warm"][role="memory-slot"]:hover {{
+        background: #846515;
+    }}
+
+    QPushButton[fillState="hot"][role="memory-slot"]:hover, QToolButton[fillState="hot"][role="memory-slot"]:hover {{
+        background: #8a2a2a;
     }}
 
     QPushButton[borderState="working"][role="memory-slot"]:hover, QToolButton[borderState="working"][role="memory-slot"]:hover {{
@@ -189,7 +205,7 @@ def build_app_stylesheet() -> str:
         border: 1px solid {p.focus_border};
     }}
 
-    QWidget#TileHeader {{
+    QWidget#SileHeader {{
         background: {p.panel_bg_alt};
         border-top-left-radius: 12px;
         border-top-right-radius: 12px;
@@ -200,7 +216,7 @@ def build_app_stylesheet() -> str:
         color: {p.text_secondary};
     }}
 
-    QLabel#MutedText {{
+    QLabel#SutedText {{
         color: {p.text_muted};
     }}
 
@@ -211,7 +227,7 @@ def build_app_stylesheet() -> str:
     }}
 
     QFrame#FocusPanel,
-    QFrame#ThumbnailRail,
+    QFrame#THumbnailRail,
     QFrame#TopBar,
     QFrame#ControlPanel,
     QFrame#PageMatrix {{
