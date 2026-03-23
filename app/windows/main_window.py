@@ -161,8 +161,8 @@ class MainWindow(QMainWindow):
         root.addWidget(self.control_panels)
 
         self.main_stack = QStackedWidget()
-
         self.page_stack = QStackedWidget()
+
         for _page_index in range(PAGE_COUNT):
             page = QWidget()
             page_layout = QVBoxLayout(page)
@@ -299,6 +299,7 @@ class MainWindow(QMainWindow):
             tile.set_toolbar_focus_mode(in_focus_view and is_active)
         self.app_state.tiles = [replace(tile.state) for _, tile in sorted(self.tiles.items())]
         self.focus_view.rail.refresh(self.app_state.tiles, self._focused_tile_id)
+        self.page_matrix.refresh_all_slots(self.app_state.tiles)
 
     def _current_matrix_slot(self) -> int | None:
         if self._focused_tile_id is not None:
@@ -308,6 +309,7 @@ class MainWindow(QMainWindow):
         return self.app_state.current_page_index * TILES_PER_PAGE
 
     def _refresh_top_state(self) -> None:
+        self.page_matrix.refresh_all_slots(self.app_state.tiles)
         loaded = sum(1 for tile in self.app_state.tiles if tile.has_content)
         loading = sum(1 for tile in self.app_state.tiles if tile.is_loading)
 
@@ -383,6 +385,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, lambda tid=focused_tile_id: self.enter_focus_mode(tid))
         else:
             self._show_active_workspace()
+        self._refresh_top_state()
 
     def on_tile_state_changed(self, state_object: object) -> None:
         state = state_object if isinstance(state_object, TileState) else None
@@ -396,7 +399,7 @@ class MainWindow(QMainWindow):
             self.schedule_session_save()
 
     def _on_run_prompt_submitted(self, text: str) -> None:
-        self.run_workspace.append_system_message(f"Message local reç : {text}", tone="info")
+        self.run_workspace.append_system_message(f"Message local reçu : {text}", tone="info")
 
     def resizeEvent(self, event) -> None:
         self.app_state.window_size = self.size()
