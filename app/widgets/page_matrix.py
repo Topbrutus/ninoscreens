@@ -65,11 +65,20 @@ class PageMatrix(QFrame):
         root.addWidget(self.grid_host, 1)
         root.addWidget(self.run_button)
 
+    def _fill_state_from_memory(self, state: TileState) -> str:
+        if not state.has_content:
+            return "empty"
+        if state.memory_mb <= 200:
+            return "cool"
+        if state.memory_mb <= 700:
+            return "warm"
+        return "hot"
+
     def set_slot_state(self, slot_index: int, state: TileState) -> None:
         button = self.slot_buttons.get(slot_index)
         if button is None:
             return
-        fill_state = "loaded" if state.has_content else "empty"
+        fill_state = self._fill_state_from_memory(state)
         if state.status is TileVisualStatus.ERROR:
             border_state = "error"
         elif state.is_loading:
@@ -82,7 +91,7 @@ class PageMatrix(QFrame):
         button.setProperty("fillState", fill_state)
         button.setProperty("borderState", border_state)
         if state.has_content:
-            button.setToolTip(state.display_title)
+            button.setToolTip(f"{state.display_title} • {state.memory_mb} MB")
         else:
             button.setToolTip(f"Ouvrir le carreau {slot_index + 1}")
         button.style().unpolish(button)
