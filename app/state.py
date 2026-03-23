@@ -29,6 +29,7 @@ class TileState:
     zoom_factor: float = DEFAULT_ZOOM
     error_message: str = ""
     status: TileVisualStatus = TileVisualStatus.EMPTY
+    memory_mb: int = 0
     thumbnail: Optional[QPixmap] = None
     thumbnail_revision: int = 0
 
