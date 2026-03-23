@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import threading
@@ -23,7 +24,7 @@ from app.api_connectors import (
     build_test_url,
     get_service_definition,
     test_api_connection,
-)
+}
 from app.audio_feedback import AudioEvent, AudioFeedbackManager
 from app.config import (
     APP_MARGIN,
@@ -51,7 +52,7 @@ from app.web_profile import build_shared_profile
 from app.widgets.api_panel import ApiConnectionPanel, ApiPanelState
 from app.widgets.audio_panel import AudioSettingsPanel
 from app.widgets.dashboard_grid import DashboardGrid
-from app.widgets.focus_view import FocusView
+From app.widgets.focus_view import FocusView
 from app.widgets.run_workspace import RunWorkspace
 from app.widgets.web_tile import WebTile
 
@@ -156,7 +157,7 @@ class MainWindow(QMainWindow):
         self.run_button.clicked.connect(self.show_run_page)
         page_nav_layout.addWidget(self.run_button)
 
-        self.audio_button = QPushButton("🔅 Audio")
+        self.audio_button = QPushButton("🔅Audio")
         self.audio_button.setProperty("compact", True)
         self.audio_button.setProperty("role", "audio")
         self.audio_button.clicked.connect(self._toggle_audio_panel)
@@ -267,21 +268,19 @@ class MainWindow(QMainWindow):
         tiles_snapshot: list[dict[str, Any]] = []
         for tile_id, tile in sorted(self.tiles.items()):
             state = tile.state
-            tiles_snapshot.append(
-                {
-                    "tile_number": tile_id + 1,
-                    "page_number": (tile_id // TILES_PER_PAGE) + 1,
-                    "has_content": state.has_content,
-                    "is_loading": state.is_loading,
-                    "is_focused": tile_id == self._focused_tile_id,
-                    "status": state.status.value,
-                    "title": state.display_title,
-                    "current_url": state.current_url,
-                    "domain": state.domain,
-                    "zoom_factor": state.zoom_factor,
-                    "error_message": state.error_message,
-                }
-            )
+            tiles_snapshot.append({
+                "tile_number": tile_id + 1,
+                "page_number": (tile_id // TILES_PER_PAGE) + 1,
+                "has_content": state.has_content,
+                "is_loading": state.is_loading,
+                "is_focused": tile_id == self._focused_tile_id,
+                "status": state.status.value,
+                "title": state.display_title,
+                "current_url": state.current_url,
+                "domain": state.domain,
+                "zoom_factor": state.zoom_factor,
+                "error_message": state.error_message,
+            })
 
         active_view = "focus" if self._focused_tile_id is not None else self.app_state.active_view
         return {
@@ -362,21 +361,13 @@ class MainWindow(QMainWindow):
         self.show_tile_page_for_tile(tile_id)
         tile.open_url_text(command.url)
         if tile.state.error_message:
-            raise BlockedAction(
-                tile.state.error_message,
-                human_validation_required=False,
-                details={"reason": "invalid_url"},
-            )
+            raise BlockedAction(tile.state.error_message, human_validation_required=False, details={"reason": "invalid_url"})
         return {"message": f"URL ouverte dans le carreau {command.tile_number}.", "tile_id": tile_id, "url": tile.state.current_url or command.url}
 
     def _handle_agent_focus_tile(self, command: AgentCommand) -> dict[str, Any]:
         tile_id, tile = self._tile_from_command(command)
         if not tile.state.has_content:
-            raise BlockedAction(
-                f"Impossible de mettre le carreau {command.tile_number} en focus : il est vide.",
-                human_validation_required=False,
-                details={"reason": "empty_tile"},
-            )
+            raise BlockedAction(f"Impossible de mettre le carreau {command.tile_number} en focus : il est vide.", human_validation_required=False, details={"reason": "empty_tile"})
         self.enter_focus_mode(tile_id)
         return {"message": f"Carreau {command.tile_number} mis en focus.", "tile_id": tile_id}
 
@@ -392,11 +383,7 @@ class MainWindow(QMainWindow):
     def _handle_agent_load_memory(self, command: AgentCommand) -> dict[str, Any]:
         tile_id, tile = self._tile_from_command(command)
         if not tile.state.has_content:
-            raise BlockedAction(
-                f"Aucune page mémorisée dans le carreau {command.tile_number}.",
-                human_validation_required=False,
-                details={"reason": "memory_slot_empty"},
-            )
+            raise BlockedAction(f"Aucune page mémorisée dans le carreau {command.tile_number}.", human_validation_required=False, details={"reason": "memory_slot_empty"})
         self.enter_focus_mode(tile_id)
         return {"message": f"Page mémorisée rechargée dans le carreau {command.tile_number}.", "tile_id": tile_id}
 
@@ -437,28 +424,13 @@ class MainWindow(QMainWindow):
         return f"{service_id}|{base_url.strip().lower()}"
 
     def _apply_api_panel_state(self) -> None:
-        self.api_panel.apply_state(
-            ApiPanelState(
-                connected=self._api_connected,
-                service_id=self._api_service_id,
-                base_url=self._api_base_url,
-                test_path=self._api_test_path,
-                secured_storage_used=self._api_secured_storage_used,
-                masked_key_hint=self._api_key_hint,
-                status_text=self._api_status_text,
-            )
-        )
+        self.api_panel.apply_state(ApiPanelState(connected=self._api_connected, service_id=self._api_service_id, base_url=self._api_base_url, test_path=self._api_test_path, secured_storage_used=self._api_secured_storage_used, masked_key_hint=self._api_key_hint, status_text=self._api_status_text))
         self._set_api_button_state(self._api_connection_state)
 
     def _set_api_button_state(self, state: str) -> None:
         self._api_connection_state = state
         self.api_button.setProperty("connectionState", state)
-        if state == "connected":
-            self.api_button.setToolTip("API connectée")
-        elif state == "error":
-            self.api_button.setToolTip("Erreur API")
-        else:
-            self.api_button.setToolTip("Connexion API")
+        self.api_button.setToolTip("API connectée" if state == "connected" else "Erreur API" if state == "error" else "Connexion API")
         self.api_button.style().unpolish(self.api_button)
         self.api_button.style().polish(self.api_button)
 
@@ -467,32 +439,18 @@ class MainWindow(QMainWindow):
             self._api_status_text = "Test API déjà en cours."
             self._apply_api_panel_state()
             return
-
         api_key = settings.api_key.strip()
         service_id = settings.service_id
         base_url = settings.base_url.strip()
         test_path = settings.test_path.strip() or get_service_definition(service_id).default_test_path
         account = self._build_secret_account(service_id, base_url)
-
         if not api_key:
             stored_key = self.secret_store.load_api_key(account)
-            if stored_key:
-                api_key = stored_key
-            elif self._api_session_key:
-                api_key = self._api_session_key
-
+            if stored_key: api_key = stored_key
+            elif self._api_session_key: api_key = self._api_session_key
         if not api_key:
-            self._on_api_test_finished(
-                ApiConnectionResult(
-                    ok=False,
-                    message="Clé API requise pour lancer le test.",
-                    service_id=service_id,
-                    base_url=base_url,
-                ),
-                False,
-            )
+            self._on_api_test_finished(ApiConnectionResult(ok=False, message="Clé API requise pour lancer le test.", service_id=service_id, base_url=base_url), False)
             return
-
         self._api_test_in_progress = True
         self._api_service_id = service_id
         self._api_base_url = base_url
@@ -501,15 +459,8 @@ class MainWindow(QMainWindow):
         self._pending_api_key = api_key
         self._set_api_button_state("idle")
         self._apply_api_panel_state()
-
         remember_securely = self.api_panel.remember_checkbox.isChecked() and self.secret_store.is_available
-        test_settings = ApiConnectionSettings(
-            service_id=service_id,
-            base_url=base_url,
-            api_key=api_key,
-            test_path=test_path,
-        )
-
+        test_settings = ApiConnectionSettings(service_id=service_id, base_url=base_url, api_key=api_key, test_path=test_path)
         def worker() -> None:
             result = test_api_connection(test_settings)
             secure_storage_used = False
@@ -517,37 +468,20 @@ class MainWindow(QMainWindow):
                 secret_result = self.secret_store.save_api_key(account, api_key)
                 if secret_result.ok:
                     secure_storage_used = True
-                    result = ApiConnectionResult(
-                        ok=True,
-                        message=f"{result.message} Clé stockée de façon sécurisée.",
-                        service_id=result.service_id,
-                        base_url=result.base_url,
-                        http_status=result.http_status,
-                        masked_key_hint=result.masked_key_hint,
-                    )
+                    result = ApiConnectionResult(ok=True, message=f"{result.message} Clé stockée de façon sécurisée.", service_id=result.service_id, base_url=result.base_url, http_status=result.http_status, masked_key_hint=result.masked_key_hint)
                 else:
-                    result = ApiConnectionResult(
-                        ok=True,
-                        message=f"{result.message} Stockage sécurisé indisponible : session courante seulement.",
-                        service_id=result.service_id,
-                        base_url=result.base_url,
-                        http_status=result.http_status,
-                        masked_key_hint=result.masked_key_hint,
-                    )
+                    result = ApiConnectionResult(ok=True, message=f"{result.message} Stockage sécurisé indisponible : session courante seulement.", service_id=result.service_id, base_url=result.base_url, http_status=result.http_status, masked_key_hint=result.masked_key_hint)
             self.api_test_finished.emit(result, secure_storage_used)
-
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_api_test_finished(self, result_obj: object, secure_storage_used: bool) -> None:
         result = result_obj if isinstance(result_obj, ApiConnectionResult) else None
         if result is None:
             return
-
         self._api_test_in_progress = False
         pending_key = self._pending_api_key
         self._api_service_id = result.service_id
         self._api_base_url = result.base_url
-
         if result.ok:
             self._api_connected = True
             self._api_status_text = result.message
@@ -562,4 +496,238 @@ class MainWindow(QMainWindow):
             self._api_status_text = result.message
             self._api_secured_storage_used = False
             self._api_session_key = ""
-            self._api_button_state(self._api_connection_state)"
+            self._api_key_hint = ""
+            self._api_connection_state = "error"
+            tone = "blocked" if result.requires_human_validation else "error"
+            self._set_agent_status(f"➠️ {result.message}", tone=tone)
+            self.audio_feedback.notify(AudioEvent.BLOCKED if result.requires_human_validation else AudioEvent.ERROR, result.message)
+        self._pending_api_key = ""
+        self._apply_api_panel_state()
+
+    def _disconnect_api(self) -> None:
+        account = self._build_secret_account(self._api_service_id, self._api_base_url)
+        if self.secret_store.is_available:
+            self.secret_store.delete_api_key(account)
+        self._api_connected = False
+        self._api_session_key = ""
+        self._api_key_hint = ""
+        self._api_secured_storage_used = False
+        self._api_status_text = "API déconnectée."
+        self._pending_api_key = ""
+        self._set_api_button_state("idle")
+        self._apply_api_panel_state()
+        self._set_agent_status("API déconnectée.", tone="info")
+
+    def activate_memory_slot(self, tile_id: int) -> None:
+        self.show_tile_page_for_tile(tile_id)
+        self.enter_focus_mode(tile_id)
+
+    def show_tile_page(self, page_index: int) -> None:
+        self.app_state.current_page_index = max(0, min(PAGE_COUNT - 1, page_index))
+        self.app_state.active_view = "tiles"
+        if self._focused_tile_id is None:
+            self._show_active_workspace()
+        self._refresh_page_buttons()
+        self._refresh_global_labels()
+        self.schedule_session_save()
+
+    def show_run_page(self) -> None:
+        self.app_state.active_view = "run"
+        if self._focused_tile_id is None:
+            self._show_active_workspace()
+        self._refresh_page_buttons()
+        self._refresh_global_labels()
+        self.schedule_session_save()
+
+    def show_tile_page_for_tile(self, tile_id: int) -> None:
+        self.app_state.current_page_index = tile_id // TILES_PER_PAGE
+        self.app_state.active_view = "tiles"
+        if self._focused_tile_id is None:
+            self._show_active_workspace()
+        self._refresh_page_buttons()
+        self._refresh_global_labels()
+
+    def reload_all_tiles(self) -> None:
+        for tile in self.tiles.values():
+            tile.reload_current()
+
+    def enter_focus_mode(self, tile_id: int) -> None:
+        if self._focused_tile_id == tile_id and self.main_stack.currentWidget() is self.focus_view:
+            return
+        if self._focused_tile_id is None:
+            self._detach_tile_from_grid(tile_id)
+        else:
+            self._return_tile_to_grid(self._focused_tile_id)
+            self._detach_tile_from_grid(tile_id)
+        self.app_state.current_page_index = tile_id // TILES_PER_PAGE
+        self.app_state.active_view = "tiles"
+        self._focused_tile_id = tile_id
+        self.app_state.focused_tile_id = tile_id
+        tile = self.tiles[tile_id]
+        self.focus_view.set_tile_widget(tile)
+        self.main_stack.setCurrentWidget(self.focus_view)
+        self._sync_focus_flags()
+        self.focus_view.rail.refresh(self.app_state.tiles, tile_id)
+        self._refresh_global_labels()
+        self.schedule_session_save()
+
+    def switch_focus_tile(self, tile_id: int) -> None:
+        if self._focused_tile_id is None:
+            self.enter_focus_mode(tile_id)
+            return
+        if tile_id == self._focused_tile_id:
+            return
+        self._return_tile_to_grid(self._focused_tile_id)
+        self._detach_tile_from_grid(tile_id)
+        self.app_state.current_page_index = tile_id // TILES_PER_PAGE
+        self.app_state.active_view = "tiles"
+        self._focused_tile_id = tile_id
+        self.app_state.focused_tile_id = tile_id
+        tile = self.tiles[tile_id]
+        self.focus_view.set_tile_widget(tile)
+        self.main_stack.setCurrentWidget(self.focus_view)
+        self._sync_focus_flags()
+        self.focus_view.rail.refresh(self.app_state.tiles, tile_id)
+        self._refresh_global_labels()
+        self.schedule_session_save()
+
+    def exit_focus_mode(self, *_args) -> None:
+        if self._focused_tile_id is None:
+            return
+        self._return_tile_to_grid(self._focused_tile_id)
+        self.focus_view.clear_tile_widget()
+        self._focused_tile_id = None
+        self.app_state.focused_tile_id = None
+        self._show_active_workspace()
+        self._sync_focus_flags()
+        self._refresh_global_labels()
+        self.schedule_session_save()
+
+    def _detach_tile_from_grid(self, tile_id: int) -> None:
+        self.page_grids[tile_id // TILES_PER_PAGE].remove_tile(self.tiles[tile_id])
+
+    def _return_tile_to_grid(self, tile_id: int) -> None:
+        tile = self.tiles[tile_id]
+        self.focus_view.clear_tile_widget()
+        self.page_grids[tile_id // TILES_PER_PAGE].place_tile(tile, tile_id % TILES_PER_PAGE)
+
+    def _show_active_workspace(self) -> None:
+        self.main_stack.setCurrentWidget(self.page_stack)
+        if self.app_state.active_view == "run":
+            self.page_stack.setCurrentIndex(RUN_PAGE_INDEX)
+        else:
+            self.page_stack.setCurrentIndex(self.app_state.current_page_index)
+
+    def _sync_focus_flags(self) -> None:
+        in_focus_view = self.main_stack.currentWidget() is self.focus_view
+        for tile_id, tile in self.tiles.items():
+            is_active_focus_tile = tile_id == self._focused_tile_id
+            tile.set_focus_flag(is_active_focus_tile)
+            tile.set_toolbar_focus_mode(in_focus_view and is_active_focus_tile)
+
+        self.app_state.tiles = [replace(tile.state) for _, tile in sorted(self.tiles.items())]
+        self.focus_view.rail.refresh(self.app_state.tiles, self._focused_tile_id)
+        self._refresh_page_buttons()
+
+    def _restore_session(self) -> None:
+        payload = load_session_payload()
+        if not payload:
+            self._refresh_page_buttons()
+            self._show_active_workspace()
+            return
+        self._restoring_session = True
+        window_payload = payload.get("window", {})
+        width = int(window_payload.get("width", DEFAULT_WINDOW_SIZE.width()))
+        height = int(window_payload.get("height", DEFAULT_WINDOW_SIZE.height()))
+        self.resize(max(width, MINIMUM_WINDOW_SIZE.width()), max(height, MINIMUM_WINDOW_SIZE.height()))
+        self.app_state.window_size = self.size()
+        requested_page_index = payload.get("current_page_index", 0)
+        if isinstance(requested_page_index, int) and 0 <= requested_page_index < PAGE_COUNT:
+            self.app_state.current_page_index = requested_page_index
+        active_view = str(payload.get("active_view", "tiles")).strip().lower()
+        self.app_state.active_view = "run" if active_view == "run" else "tiles"
+        for tile_payload in payload.get("tiles", []):
+            tile_id = tile_payload.get("tile_id")
+            if not isinstance(tile_id, int) or tile_id not in self.tiles:
+                continue
+            if tile_payload.get("has_content"):
+                current_url = str(tile_payload.get("current_url", "")).strip()
+                zoom_factor = float(tile_payload.get("zoom_factor", 1.0))
+                self.tiles[tile_id].restore_from_session(current_url=current_url, zoom_factor=zoom_factor)
+        focused_tile_id = payload.get("focused_tile_id")
+        self._restoring_session = False
+        if isinstance(focused_tile_id, int) and focused_tile_id in self.tiles:
+            QTimer.singleShot(0, lambda tid=focused_tile_id: self.enter_focus_mode(tid))
+        else:
+            self._show_active_workspace()
+        self._refresh_page_buttons()
+
+    def on_tile_state_changed(self, state_object: object) -> None:
+        state = state_object if isinstance(state_object, TileState) else None
+        if state is None:
+            return
+        self.app_state.tiles[state.tile_id] = state
+        if self._focused_tile_id is not None:
+            self.focus_view.rail.refresh(self.app_state.tiles, self._focused_tile_id)
+        self._refresh_global_labels()
+        if not self._restoring_session:
+            self.schedule_session_save()
+
+    def _refresh_page_buttons(self) -> None:
+        for page_index, button in self.page_buttons.items():
+            button.setProperty("active", self.app_state.active_view == "tiles" and self.app_state.current_page_index == page_index)
+            button.style().unpolish(button)
+            button.style().polish(button)
+        self.run_button.setProperty("active", self.app_state.active_view == "run")
+        self.run_button.style().unpolish(self.run_button)
+        self.run_button.style().polish(self.run_button)
+
+    def toggle_global_fullscreen(self) -> None:
+        if self.isFullScreen():
+            self.showNormal()
+            self.app_state.is_fullscreen = False
+            self.fullscreen_button.setText("⛶ Plein écran")
+        else:
+            self.showFullScreen()
+            self.app_state.is_fullscreen = True
+            self.fullscreen_button.setText("🗗 Quitter le plein écran")
+        self._refresh_global_labels()
+        self.schedule_session_save()
+
+    def resizeEvent(self, event) -> None:
+        self.app_state.window_size = self.size()
+        self.schedule_session_save()
+        super().resizeEvent(event)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self.app_state.window_size = self.size()
+        self.save_session_now()
+        super().closeEvent(event)
+
+    def schedule_session_save(self) -> None:
+        if self._restoring_session:
+            return
+        self._save_timer.start()
+
+    def save_session_now(self, *_args) -> None:
+        self.app_state.tiles = [replace(tile.state) for _, tile in sorted(self.tiles.items())]
+        self.app_state.focused_tile_id = self._focused_tile_id
+        self.app_state.window_size = self.size()
+        save_session_payload(serialize_app_state(self.app_state))
+        self._refresh_global_labels()
+
+    def _refresh_global_labels(self) -> None:
+        loaded = sum(1 for tile in self.app_state.tiles if tile.has_content)
+        loading = sum(1 for tile in self.app_state.tiles if tile.is_loading)
+        api_suffix = " • API ⚡" if self._api_connected else ""
+        if self._focused_tile_id is not None:
+            self.mode_label.setText(f"Mode focus • carreau {self._focused_tile_id + 1}")
+        elif self.app_state.active_view == "run":
+            self.mode_label.setText("Page RUN / Corvo")
+        else:
+            self.mode_label.setText(f"Page {self.app_state.current_page_index + 1} / {PAGE_COUNT}")
+        self.summary_label.setText(f"{loaded}/{TILE_COUNT} chargés — {loading} en chargement{api_suffix}")
+
+    def _on_run_prompt_submitted(self, text: str) -> None:
+        self._set_agent_status(f"Message reçu pour RUN : {text}", tone="info")
+        self.run_workspace.append_system_message("Conversation locale pas encore branchée. La structure de la page RUN est maintenant en place.", tone="info")
