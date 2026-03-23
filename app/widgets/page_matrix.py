@@ -7,10 +7,9 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QPushButton,
     QWidget,
-    )
+)
 
-
-from app.config import PAGE_COUNT, TILES_PER_PAGD
+from app.config import PAGE_COUNT, TILES_PER_PAGE
 from app.state import TileState, TileVisualStatus
 
 
@@ -45,9 +44,8 @@ class PageMatrix(QFrame):
             button.setProperty("compact", True)
             button.setProperty("role", "memory-slot")
             button.setProperty("slotIndex", slot_index)
-            button.setProperty("filled", False)
-            button.setProperty("loading", False)
-            button.setProperty("errored", False)
+            button.setProperty("fillState", "empty")
+            button.setProperty("borderState", "idle")
             button.setProperty("active", False)
             button.setToolTip(f"Ouvrir le carreau {slot_index + 1}")
             button.clicked.connect(lambda _checked=False, idx=slot_index: self.slot_activated.emit(idx))
@@ -71,9 +69,18 @@ class PageMatrix(QFrame):
         button = self.slot_buttons.get(slot_index)
         if button is None:
             return
-        button.setProperty("filled", bool(state.has_content))
-        button.setProperty("loading", bool(state.is_loading))
-        button.setProperty("errored", state.status is TileVisualStatus.ERROR)
+        fill_state = "loaded" if state.has_content else "empty"
+        if state.status is TileVisualStatus.ERROR:
+            border_state = "error"
+        elif state.is_loading:
+            border_state = "working"
+        elif state.has_content:
+            border_state = "ready"
+        else:
+            border_state = "idle"
+
+        button.setProperty("fillState", fill_state)
+        button.setProperty("borderState", border_state)
         if state.has_content:
             button.setToolTip(state.display_title)
         else:
