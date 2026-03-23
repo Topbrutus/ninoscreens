@@ -27,6 +27,7 @@ from app.config import (
     TILE_COUNT,
     TILES_PER_PAGE,
 )
+from app.memory_usage import get_process_memory_mb
 from app.session_store import load_session_payload, save_session_payload, serialize_app_state
 from app.state import AppState, TileState
 from app.web_profile import build_shared_profile
@@ -58,11 +59,17 @@ class MainWindow(QMainWindow):
         self._save_timer.setInterval(SESSION_SAVE_DEBOUNCE_MS)
         self._save_timer.timeout.connect(self.save_session_now)
 
+        self._memory_timer = QTimer(self)
+        self._memory_timer.setInterval(1500)
+        self._memory_timer.timeout.connect(self._refresh_memory_usage)
+
         self._build_ui()
         self._build_tiles()
         self._restore_session()
         self._sync_focus_flags()
+        self._refresh_memory_usage()
         self._refresh_top_state()
+        self._memory_timer.start()
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -196,6 +203,33 @@ class MainWindow(QMainWindow):
             slot_index = tile_id % TILES_PER_PAGE
             self.page_grids[page_index].place_tile(tile, slot_index)
 
+    def _tile_memory_mb(self, tile: WebTile) -> int:
+        page = getattr(tile, "_page", None)
+        if page is None:
+            return 0
+        pid_getter = getattr(page, "renderProcessPid", None)
+        if not callable(pid_getter):
+            return 0
+        try:
+            pid = int(pid_getter())
+        except (TypeError, ValueError):
+            return 0
+        memory_mb = get_process_memory_mb(pid)
+        return 0 if memory_mb is None else memory_mb
+
+    def _refresh_memory_usage(self) -> None:
+        changed = False
+        for tile_id, tile in self.tiles.items():
+            memory_mb = self._tile_memory_mb(tile)
+            if tile.state.memory_mb != memory_mb:
+                tile.state.memory_mb = memory_mb
+                self.app_state.tiles[tile_id].memory_mb = memory_mb
+                changed = True
+        if changed:
+            self._refresh_top_state()
+            if self._focused_tile_id is not None:
+                self.focus_view.rail.refresh(self.app_state.tiles, self._focused_tile_id)
+
     def activate_memory_slot(self, tile_id: int) -> None:
         tile_id = max(0, min(TILE_COUNT - 1, tile_id))
         self.show_tile_page_for_tile(tile_id)
@@ -228,7 +262,6 @@ class MainWindow(QMainWindow):
             return
         if self._focused_tile_id == tile_id and self.main_stack.currentWidget() is self.focus_view:
             return
-
         if self._focused_tile_id is None:
             self._detach_tile_from_grid(tile_id)
         else:
@@ -312,6 +345,7 @@ class MainWindow(QMainWindow):
         self.page_matrix.refresh_all_slots(self.app_state.tiles)
         loaded = sum(1 for tile in self.app_state.tiles if tile.has_content)
         loading = sum(1 for tile in self.app_state.tiles if tile.is_loading)
+        hot = sum(1 for tile in self.app_state.tiles if tile.memory_mb >= 700)
 
         if self._focused_tile_id is not None:
             self.mode_label.setText(f"Focus • carreau {self._focused_tile_id + 1}")
@@ -320,7 +354,7 @@ class MainWindow(QMainWindow):
         else:
             self.mode_label.setText(f"Page {self.app_state.current_page_index + 1} / {PAGE_COUNT}")
 
-        self.summary_label.setText(f"{loaded}/{TILE_COUNT} chargés — {loading} en chargement")
+        self.summary_label.setText(f"{loaded}/{TILE_COUNT} chargés • {loading} en chargement • }hot} rouges mémoire")
         self.page_matrix.set_active_slot(self._current_matrix_slot(), run_active=self.app_state.active_view == "run")
         self.focus_exit_button.setEnabled(self._focused_tile_id is not None)
 
@@ -385,6 +419,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, lambda tid=focused_tile_id: self.enter_focus_mode(tid))
         else:
             self._show_active_workspace()
+        self._refresh_memory_usage()
         self._refresh_top_state()
 
     def on_tile_state_changed(self, state_object: object) -> None:
@@ -394,6 +429,7 @@ class MainWindow(QMainWindow):
         self.app_state.tiles[state.tile_id] = state
         if self._focused_tile_id is not None:
             self.focus_view.rail.refresh(self.app_state.tiles, self._focused_tile_id)
+        self._refresh_memory_usage()
         self._refresh_top_state()
         if not self._restoring_session:
             self.schedule_session_save()
