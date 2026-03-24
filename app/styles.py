@@ -76,9 +76,32 @@ def build_app_stylesheet() -> str:
         font-weight: 600;
     }}
 
-    QPushButton[filled="true"][role="memory-slot"], QToolButton[filled="true"][role="memory-slot"] {{
+    QPushButton[fillState="empty"][role="memory-slot"], QToolButton[fillState="empty"][role="memory-slot"] {{
+        background: #1d3651;
+    }}
+
+    QPushButton[fillState="cool"][role="memory-slot"], QToolButton[fillState="cool"][role="memory-slot"] {{
         background: #1f4a74;
-        border-color: #4b86be;
+    }}
+
+    QPushButton[fillState="warm"][role="memory-slot"], QToolButton[fillState="warm"][role="memory-slot"] {{
+        background: #6a5212;
+    }}
+
+    QPushButton[fillState="hot"][role="memory-slot"], QToolButton[fillState="hot"][role="memory-slot"] {{
+        background: #6a1f1f;
+    }}
+
+    QPushButton[borderState="ready"][role="memory-slot"], QToolButton[borderState="ready"][role="memory-slot"] {{
+        border-color: #4caf50;
+    }}
+
+    QPushButton[borderState="working"][role="memory-slot"], QToolButton[borderState="working"][role="memory-slot"] {{
+        border-color: #f1c40f;
+    }}
+
+    QPushButton[borderState="error"][role="memory-slot"], QToolButton[borderState="error"][role="memory-slot"] {{
+        border-color: #e74c3c;
     }}
 
     QPushButton[active="true"][role="memory-slot"], QToolButton[active="true"][role="memory-slot"] {{
@@ -140,8 +163,24 @@ def build_app_stylesheet() -> str:
         background: #274563;
     }}
 
-    QPushButton[filled="true"][role="memory-slot"]:hover, QToolButton[filled="true"][role="memory-slot"]:hover {{
+    QPushButton[fillState="cool"][role="memory-slot"]:hover, QToolButton[fillState="cool"][role="memory-slot"]:hover {{
         background: #285b8b;
+    }}
+
+    QPushButton[fillState="warm"][role="memory-slot"]:hover, QToolButton[fillState="warm"][role="memory-slot"]:hover {{
+        background: #846515;
+    }}
+
+    QPushButton[fillState="hot"][role="memory-slot"]:hover, QToolButton[fillState="hot"][role="memory-slot"]:hover {{
+        background: #8a2a2a;
+    }}
+
+    QPushButton[borderState="working"][role="memory-slot"]:hover, QToolButton[borderState="working"][role="memory-slot"]:hover {{
+        border-color: #f6d365;
+    }}
+
+    QPushButton[borderState="error"][role="memory-slot"]:hover, QToolButton[borderState="error"][role="memory-slot"]:hover {{
+        border-color: #f0857a;
     }}
 
     QPushButton[active="true"][role="memory-slot"]:hover, QToolButton[active="true"][role="memory-slot"]:hover {{
@@ -166,7 +205,7 @@ def build_app_stylesheet() -> str:
         border: 1px solid {p.focus_border};
     }}
 
-    QWidget#TileHeader {{
+    QWidget#SileHeader {{
         background: {p.panel_bg_alt};
         border-top-left-radius: 12px;
         border-top-right-radius: 12px;
@@ -177,7 +216,7 @@ def build_app_stylesheet() -> str:
         color: {p.text_secondary};
     }}
 
-    QLabel#MutedText {{
+    QLabel#SutedText {{
         color: {p.text_muted};
     }}
 
@@ -188,9 +227,10 @@ def build_app_stylesheet() -> str:
     }}
 
     QFrame#FocusPanel,
-    QFrame#ThumbnailRail,
+    QFrame#THumbnailRail,
     QFrame#TopBar,
-    QFrame#ControlPanel {{
+    QFrame#ControlPanel,
+    QFrame#PageMatrix {{
         background: {p.panel_bg};
         border: 1px solid {p.panel_border};
         border-radius: 12px;

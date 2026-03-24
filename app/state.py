@@ -29,6 +29,7 @@ class TileState:
     zoom_factor: float = DEFAULT_ZOOM
     error_message: str = ""
     status: TileVisualStatus = TileVisualStatus.EMPTY
+    memory_mb: int = 0
     thumbnail: Optional[QPixmap] = None
     thumbnail_revision: int = 0
 
@@ -49,3 +50,5 @@ class AppState:
     focused_tile_id: Optional[int] = None
     is_fullscreen: bool = False
     window_size: QSize | None = None
+    current_page_index: int = 0
+    active_view: str = "tiles"
