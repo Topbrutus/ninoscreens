@@ -209,7 +209,7 @@ class WebTile(QFrame):
         header_layout.setContentsMargins(8, 6, 8, 6)
         header_layout.setSpacing(4)
 
-        self.back_button = QPushButton("⬅���")
+        self.back_button = QPushButton("⬅️")
         self.forward_button = QPushButton("➡️")
         self.reload_button = QPushButton("🔄")
         self.zoom_out_button = QPushButton("➖")

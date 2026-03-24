@@ -71,7 +71,7 @@ class RunWorkspace(QFrame):
         input_row.setSpacing(8)
 
         self.input_edit = QLineEdit()
-        self.input_edit.setPlaceholderText("GÉcrire à Run ici puis appuyer Entrée…")
+        self.input_edit.setPlaceholderText("Écrire à Run ici puis appuyer Entrée…")
         self.input_edit.returnPressed.connect(self._submit_prompt)
 
         self.send_button = QPushButton("Envoyer")

@@ -93,7 +93,7 @@ class MainWindow(QMainWindow):
         self.window_title_label.setStyleSheet("font-size: 16px; font-weight: 700;")
         self.mode_label = QLabel("Page 1 / 3")
         self.mode_label.setObjectName("SecondaryText")
-        self.summary_label = QLabel""
+        self.summary_label = QLabel("")
         self.summary_label.setObjectName("MutedText")
 
         title_layout.addWidget(self.window_title_label)
@@ -371,7 +371,7 @@ class MainWindow(QMainWindow):
         else:
             self.mode_label.setText(f"Page {self.app_state.current_page_index + 1} / {PAGE_COUNT}")
 
-        self.summary_label.setText(f"{loaded}/{TILE_COUNT} chargés • {loading} en chargement • }hot} rouges mémoire")
+        self.summary_label.setText(f"{loaded}/{TILE_COUNT} chargés • {loading} en chargement • {hot} rouges mémoire")
         self.page_matrix.set_active_slot(self._current_matrix_slot(), run_active=self.app_state.active_view == "run")
         self.focus_exit_button.setEnabled(self._focused_tile_id is not None)
 
