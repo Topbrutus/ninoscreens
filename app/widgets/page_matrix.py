@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QSize, Signal
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -14,6 +15,7 @@ from app.state import TileState, TileVisualStatus
 
 
 TILING_COLUMNS = 12
+MATRIX_ICON_SIZE = QSize(16, 16)
 
 
 class PageMatrix(QFrame):
@@ -78,6 +80,7 @@ class PageMatrix(QFrame):
         button = self.slot_buttons.get(slot_index)
         if button is None:
             return
+
         fill_state = self._fill_state_from_memory(state)
         if state.status is TileVisualStatus.ERROR:
             border_state = "error"
@@ -90,10 +93,20 @@ class PageMatrix(QFrame):
 
         button.setProperty("fillState", fill_state)
         button.setProperty("borderState", border_state)
+
+        if state.thumbnail is not None and not state.thumbnail.isNull():
+            button.setIcon(QIcon(state.thumbnail))
+            button.setIconSize(MATRIX_ICON_SIZE)
+            button.setText("")
+        else:
+            button.setIcon(QIcon())
+            button.setText(str(slot_index + 1))
+
         if state.has_content:
-            button.setToolTip(f"{state.display_title} • {state.memory_mb} MB")
+            button.setToolTip(f"Carreau {slot_index + 1} • {state.display_title} • {state.memory_mb} MB")
         else:
             button.setToolTip(f"Ouvrir le carreau {slot_index + 1}")
+
         button.style().unpolish(button)
         button.style().polish(button)
 
@@ -102,6 +115,7 @@ class PageMatrix(QFrame):
             button.setProperty("active", slot_index == idx)
             button.style().unpolish(button)
             button.style().polish(button)
+
         self.run_button.setProperty("active", run_active)
         self.run_button.style().unpolish(self.run_button)
         self.run_button.style().polish(self.run_button)
