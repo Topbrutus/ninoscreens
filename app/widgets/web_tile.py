@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import replace
 
@@ -118,7 +118,7 @@ class WebTile(QFrame):
 
     def set_toolbar_focus_mode(self, in_focus_mode: bool) -> None:
         self._toolbar_focus_mode = in_focus_mode
-        if self._browser_container is not None:
+        if self._browser_container is None:
             return
 
         if in_focus_mode:
@@ -209,7 +209,7 @@ class WebTile(QFrame):
         header_layout.setContentsMargins(8, 6, 8, 6)
         header_layout.setSpacing(4)
 
-        self.back_button = QPushButton("⬅���")
+        self.back_button = QPushButton("⬅️")
         self.forward_button = QPushButton("➡️")
         self.reload_button = QPushButton("🔄")
         self.zoom_out_button = QPushButton("➖")
