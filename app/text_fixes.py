@@ -110,18 +110,6 @@ def _fix_tile(tile: Any) -> None:
 
 
 def _fix_main_window(window: Any) -> None:
-    app_state = getattr(window, "app_state", None)
-    tiles = list(getattr(app_state, "tiles", []) or [])
-
-    loaded = sum(1 for tile in tiles if getattr(tile, "has_content", False))
-    loading = sum(1 for tile in tiles if getattr(tile, "is_loading", False))
-    hot = sum(1 for tile in tiles if getattr(tile, "memory_mb", 0) >= 700)
-
-    summary_label = getattr(window, "summary_label", None)
-    if summary_label is not None:
-        summary_text = f"{loaded}/{getattr(window, 'TILE_COUNT', None) or 9} chargés • {loading} en chargement • {hot} rouges mémoire"
-        summary_label.setText(summary_text)
-
     fullscreen_button = getattr(window, "fullscreen_button", None)
     if fullscreen_button is not None:
         fullscreen_text = "Quitter plein écran" if window.isFullScreen() else "Plein écran"
