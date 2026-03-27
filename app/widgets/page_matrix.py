@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
 from app.config import PAGE_COUNT, TILES_PER_PAGE
 from app.state import TileState, TileVisualStatus
 
-
 TILING_COLUMNS = 12
 MATRIX_ICON_SIZE = QSize(16, 16)
 
@@ -94,11 +93,7 @@ class PageMatrix(QFrame):
         button.setProperty("fillState", fill_state)
         button.setProperty("borderState", border_state)
 
-        if state.thumbnail is not None and not state.thumbnail.isNull():
-            button.setIcon(QIcon(state.thumbnail))
-            button.setIconSize(MATRIX_ICON_SIZE)
-            button.setText("")
-        else:
+        if not state.has_content:
             button.setIcon(QIcon())
             button.setText(str(slot_index + 1))
 
