@@ -5,6 +5,7 @@ import sys
 from PySide6.QtWidgets import QApplication
 
 from app.config import APP_NAME
+from app.matrix_icon_fixes import apply_runtime_matrix_icon_fixes
 from app.styles import build_app_stylesheet
 from app.text_fixes import apply_runtime_text_fixes
 from app.windows.main_window import MainWindow
@@ -20,6 +21,7 @@ def main() -> int:
 
     window = MainWindow()
     apply_runtime_text_fixes(window)
+    apply_runtime_matrix_icon_fixes(window)
     window.show()
 
     return app.exec()
