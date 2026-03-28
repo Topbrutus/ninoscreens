@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -34,15 +35,7 @@ from app.state import TileState, TileVisualStatus
 from app.url_utils import normalize_user_url
 
 
-class PopupCapturePage(QWebEnginePage):
-    """
-    Temporary page used to capture popup / new-window requests.
-
-    Strategy:
-    - redirect the first resulting URL back into the current tile
-    - do not allow uncontrolled native windows to appear
-    """
-
+class PopUpCapturePage(QWebEnginePage):
     popup_url_ready = Signal(QUrl)
 
     def __init__(self, profile: QWebEngineProfile, parent=None) -> None:
@@ -62,7 +55,7 @@ class TileWebPage(QWebEnginePage):
         super().__init__(profile, parent)
 
     def createWindow(self, _type) -> QWebEnginePage:
-        popup_page = PopupCapturePage(self.profile(), self)
+        popup_page = PopUpCapturePage(self.profile(), self)
         popup_page.popup_url_ready.connect(self.popup_url_ready.emit)
         return popup_page
 
@@ -118,18 +111,16 @@ class WebTile(QFrame):
 
     def set_toolbar_focus_mode(self, in_focus_mode: bool) -> None:
         self._toolbar_focus_mode = in_focus_mode
-        if self._browser_container is not None:
+        if self._browser_container is None:
             return
-
         if in_focus_mode:
-            self.focus_button.setText("🧩")
-            self.focus_button.setToolTip("Revenir à la grille")
+            self.focus_button.setText("Grid")
+            self.focus_button.setToolTip("Return to grid")
             self.focus_button.setProperty("role", "nav")
         else:
-            self.focus_button.setText("🎯")
-            self.focus_button.setToolTip("Ouvrir ce carreau en mode focus")
+            self.focus_button.setText("Focus")
+            self.focus_button.setToolTip("Open this tile in split mode")
             self.focus_button.setProperty("role", "accent")
-
         self.focus_button.style().unpolish(self.focus_button)
         self.focus_button.style().polish(self.focus_button)
 
@@ -140,17 +131,17 @@ class WebTile(QFrame):
         layout.setSpacing(10)
         layout.addStretch(1)
 
-        title = QLabel(f"Carreau {self.tile_id + 1}")
+        title = QLabel(f"Tile {self.tile_id + 1}")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet("font-size: 16px; font-weight: 600;")
 
-        prompt = QLabel("Quelle page internet voulez-vous avoir ?")
+        prompt = QLabel("Enter a web address to load this tile.")
         prompt.setObjectName("TilePrompt")
         prompt.setWordWrap(True)
         prompt.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.empty_url_edit = QLineEdit()
-        self.empty_url_edit.setPlaceholderText("https://exemple.com")
+        self.empty_url_edit.setPlaceholderText("https://example.com")
         self.empty_url_edit.setFixedHeight(URL_BAR_HEIGHT + 4)
         self.empty_url_edit.returnPressed.connect(self.load_from_empty_input)
 
@@ -158,7 +149,7 @@ class WebTile(QFrame):
         buttons_row.setContentsMargins(0, 0, 0, 0)
         buttons_row.setSpacing(8)
 
-        self.empty_load_button = QPushButton("🚠 Charger")
+        self.empty_load_button = QPushButton("Load")
         self.empty_load_button.setProperty("role", "accent")
         self.empty_load_button.clicked.connect(self.load_from_empty_input)
 
@@ -209,30 +200,30 @@ class WebTile(QFrame):
         header_layout.setContentsMargins(8, 6, 8, 6)
         header_layout.setSpacing(4)
 
-        self.back_button = QPushButton("⬅���")
-        self.forward_button = QPushButton("➡️")
-        self.reload_button = QPushButton("🔄")
-        self.zoom_out_button = QPushButton("➖")
-        self.zoom_in_button = QPushButton("➕")
-        self.memory_button = QPushButton("💾")
-        self.focus_button = QPushButton("🎯")
-        self.close_button = QPushButton("❌")
+        self.back_button = QPushButton("Back")
+        self.forward_button = QPushButton("Forward")
+        self.reload_button = QPushButton("Reload")
+        self.zoom_out_button = QPushButton("-")
+        self.zoom_in_button = QPushButton("+")
+        self.memory_button = QPushButton("Save")
+        self.focus_button = QPushButton("Focus")
+        self.close_button = QPushButton("X")
 
         for button, tooltip, role in (
-            (self.back_button, "Retour", "nav"),
-            (self.forward_button, "Avancer", "nav"),
-            (self.reload_button, "Recharger", "nav"),
-            (self.zoom_out_button, "Zoom -", "zoom"),
-            (self.zoom_in_button, "Zoom +", "zoom"),
-            (self.memory_button, "Mémoriser maintenant ce carreau", "memory"),
-            (self.focus_button, "Ouvrir ce carreau en mode focus", "accent"),
-            (self.close_button, "Fermer ce carreau", "danger"),
+            (self.back_button, "Go back", "nav"),
+            (self.forward_button, "Go forward", "nav"),
+            (self.reload_button, "Reload", "nav"),
+            (self.zoom_out_button, "Zoom out", "zoom"),
+            (self.zoom_in_button, "Zoom in", "zoom"),
+            (self.memory_button, "Save this tile", "memory"),
+            (self.focus_button, "Open this tile in split mode", "accent"),
+            (self.close_button, "Close this tile", "danger"),
         ):
             self._configure_toolbar_button(button, tooltip, role)
 
         self.browser_url_edit = QLineEdit()
         self.browser_url_edit.setObjectName("BrowserUrlEdit")
-        self.browser_url_edit.setPlaceholderText("Adresse de la page")
+        self.browser_url_edit.setPlaceholderText("Page address")
         self.browser_url_edit.setFixedHeight(URL_BAR_HEIGHT)
         self.browser_url_edit.setMinimumWidth(90)
         self.browser_url_edit.returnPressed.connect(self.load_from_browser_input)
@@ -307,7 +298,6 @@ class WebTile(QFrame):
         if not clean_url:
             self.reset_to_empty()
             return
-
         zoom = max(MIN_ZOOM, min(MAX_ZOOM, round(float(zoom_factor), 2)))
         self._state.zoom_factor = zoom
         self._ensure_browser_page()
@@ -328,7 +318,6 @@ class WebTile(QFrame):
         self.stack.setCurrentWidget(self._browser_container)
         self.browser_url_edit.setText(result.normalized_text)
         self.empty_url_edit.setText(result.normalized_text)
-
         self._state.has_content = True
         self._state.error_message = ""
         self._state.status = TileVisualStatus.LOADING
@@ -352,7 +341,6 @@ class WebTile(QFrame):
         else:
             self.error_banner.setText(message)
             self.error_banner.show()
-
         self._state.error_message = message
         self._state.status = TileVisualStatus.ERROR
         self._emit_state()
@@ -373,22 +361,14 @@ class WebTile(QFrame):
         self._emit_state()
 
     def reset_to_empty(self) -> None:
-        """
-        Return the tile to its initial state.
-
-        We recreate the browser layer on the next load so that navigation history,
-        page instance, and local transient state are reset cleanly.
-        """
         if self._browser_container is not None:
             self.stack.removeWidget(self._browser_container)
             self._browser_container.deleteLater()
             self._browser_container = None
             self._web_view = None
             self._page = None
-
         self.empty_url_edit.clear()
         self.empty_error_label.hide()
-
         self._state.current_url = ""
         self._state.title = ""
         self._state.domain = ""
@@ -397,7 +377,6 @@ class WebTile(QFrame):
         self._state.error_message = ""
         self._state.zoom_factor = DEFAULT_ZOOM
         self._state.status = TileVisualStatus.EMPTY
-
         self.stack.setCurrentWidget(self.empty_page)
         self.queue_thumbnail_capture()
         self._emit_state()
@@ -423,10 +402,9 @@ class WebTile(QFrame):
             self.clear_errors()
         else:
             self._state.status = TileVisualStatus.ERROR
-            self._state.error_message = "Le chargement a échoué ou la page est inaccessible."
+            self._state.error_message = "The page failed to load."
             self.error_banner.setText(self._state.error_message)
             self.error_banner.show()
-
         self._apply_navigation_state()
         self.queue_thumbnail_capture()
         self._emit_state()
@@ -449,7 +427,6 @@ class WebTile(QFrame):
     def _apply_navigation_state(self) -> None:
         if self._browser_container is None or self._web_view is None:
             return
-
         history = self._web_view.history()
         self.back_button.setEnabled(history.canGoBack())
         self.forward_button.setEnabled(history.canGoForward())
@@ -461,13 +438,6 @@ class WebTile(QFrame):
         self.close_button.setEnabled(self._state.has_content)
 
     def _handle_page_fullscreen_request(self, request) -> None:
-        """
-        Reject site-driven fullscreen in V1.
-
-        This keeps the application in control and avoids conflicts with:
-        - the application's own focus mode
-        - the application's own global fullscreen mode
-        """
         request.reject()
 
     def queue_thumbnail_capture(self) -> None:
@@ -476,7 +446,6 @@ class WebTile(QFrame):
     def capture_thumbnail_if_possible(self) -> None:
         if not self.isVisible():
             return
-
         pixmap = self._build_thumbnail_pixmap()
         self._state.thumbnail = pixmap
         self._state.thumbnail_revision += 1
@@ -501,7 +470,7 @@ class WebTile(QFrame):
         painter.drawText(
             pixmap.rect().adjusted(12, 12, -12, -12),
             Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
-            self._state.display_title if self._state.has_content else f"Carreau {self.tile_id + 1}\nVide",
+            self._state.display_title if self._state.has_content else f"Tile {self.tile_id + 1}\nEmpty",
         )
         painter.end()
         return pixmap
