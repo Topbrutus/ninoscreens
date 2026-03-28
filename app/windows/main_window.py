@@ -58,6 +58,7 @@ class MainWindow(QMainWindow):
             self.app_state.tiles = [TileState(tile_id=i) for i in range(TILE_COUNT)]
 
         self.profile = build_shared_profile(self)
+
         self.tiles: dict[int, WebTile] = {}
         self.page_grids: list[DashboardGrid] = []
         self._focused_tile_id: int | None = None
@@ -90,7 +91,7 @@ class MainWindow(QMainWindow):
 
         self.window_title_label = QLabel(APP_NAME)
         self.window_title_label.setStyleSheet("font-size: 16px; font-weight: 700;")
-        self.mode_label = QLabel("Page 1 / 3")
+        self.mode_label = QLabel(f"Page 1 / {PAGE_COUNT}")
         self.mode_label.setObjectName("SecondaryText")
         self.summary_label = QLabel("")
         self.summary_label.setObjectName("MutedText")
@@ -177,6 +178,7 @@ class MainWindow(QMainWindow):
             tile.memory_requested.connect(self.activate_memory_slot)
             tile.focus_requested.connect(self.enter_focus_mode)
             tile.grid_requested.connect(self.exit_focus_mode)
+
             self.tiles[tile_id] = tile
 
             page_index = self._tile_page_index(tile_id)
@@ -198,6 +200,7 @@ class MainWindow(QMainWindow):
     def show_tile_page(self, page_index: int) -> None:
         self.app_state.current_page_index = max(0, min(PAGE_COUNT - 1, page_index))
         self.app_state.active_view = "tiles"
+
         if self._focused_tile_id is None:
             self._show_active_workspace()
         else:
@@ -262,6 +265,7 @@ class MainWindow(QMainWindow):
             self.focus_view.hide_split_panel()
         self.app_state.split_panel_visible = self.focus_view.is_split_panel_visible()
         self.main_stack.setCurrentWidget(self.focus_view)
+
         self._sync_focus_flags()
         self._refresh_top_state()
 
