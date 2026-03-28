@@ -1,120 +1,26 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import (
-    QGridLayout,
-    QHBoxLayout,
-    QPushButton,
-    QSizePolicy,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import QSplitter, QVBoxLayout, QWidget
 
 from app.config import APP_MARGIN
-from app.state import TileState, TileVisualStatus
-
-_SPLIT_COLUMNS = 3
-_SPLIT_BUTTON_WIDTH = 68
-_SPLIT_BUTTON_HEIGHT = 34
-_SPLIT_PANEL_WIDTH = 228
-
-
-class SplitSlotPanel(QWidget):
-    tile_selected = Signal(int)
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("SplitSlotPanel")
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
-        self.setMinimumWidth(_SPLIT_PANEL_WIDTH)
-        self.setMaximumWidth(_SPLIT_PANEL_WIDTH)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(8)
-
-        self.grid_host = QWidget()
-        self.grid_host.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
-
-        grid = QGridLayout(self.grid_host)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(6)
-        grid.setVerticalSpacing(6)
-
-        self.slot_buttons: dict[int, QPushButton] = {}
-        for slot_index in range(36):
-            button = QPushButton(str(slot_index + 1))
-            button.setMinimumWidth(_SPLIT_BUTTON_WIDTH)
-            button.setMinimumHeight(_SPLIT_BUTTON_HEIGHT)
-            button.setProperty("compact", True)
-            button.setProperty("role", "memory-slot")
-            button.setProperty("fillState", "empty")
-            button.setProperty("borderState", "idle")
-            button.setProperty("active", False)
-            button.setToolTip(f"Ouvrir le carreau {slot_index + 1}")
-            button.clicked.connect(
-                lambda _checked=False, idx=slot_index: self.tile_selected.emit(idx)
-            )
-            row = slot_index // _SPLIT_COLUMNS
-            column = slot_index % _SPLIT_COLUMNS
-            grid.addWidget(button, row, column)
-            self.slot_buttons[slot_index] = button
-
-        root.addWidget(self.grid_host, 0)
-
-    def _fill_state_from_memory(self, state: TileState) -> str:
-        if not state.has_content:
-            return "empty"
-        if state.memory_mb <= 200:
-            return "cool"
-        if state.memory_mb <= 700:
-            return "warm"
-        return "hot"
-
-    def refresh(self, tiles: list[TileState], active_tile_id: int | None) -> None:
-        for slot_index, button in self.slot_buttons.items():
-            if slot_index < len(tiles):
-                state = tiles[slot_index]
-                fill_state = self._fill_state_from_memory(state)
-                if state.status is TileVisualStatus.ERROR:
-                    border_state = "error"
-                elif state.is_loading:
-                    border_state = "working"
-                elif state.has_content:
-                    border_state = "ready"
-                else:
-                    border_state = "idle"
-
-                if state.has_content:
-                    button.setToolTip(f"{state.display_title} • {state.memory_mb} MB")
-                else:
-                    button.setToolTip(f"Ouvrir le carreau {slot_index + 1}")
-            else:
-                fill_state = "empty"
-                border_state = "idle"
-                button.setToolTip(f"Ouvrir le carreau {slot_index + 1}")
-
-            button.setProperty("fillState", fill_state)
-            button.setProperty("borderState", border_state)
-            button.setProperty("active", active_tile_id == slot_index)
-            button.style().unpolish(button)
-            button.style().polish(button)
+from app.state import TileState
+from app.widgets.split_selector import SplitSelectorGrid
 
 
 class FocusView(QWidget):
-    """
-    Focus first.
-    Split chooser appears only when requested.
-    """
-
     tile_switch_requested = Signal(int)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
 
-        root = QHBoxLayout(self)
+        root = QVBoxLayout(self)
         root.setContentsMargins(APP_MARGIN, APP_MARGIN, APP_MARGIN, APP_MARGIN)
-        root.setSpacing(10)
+        root.setSpacing(0)
+
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setChildrenCollapsible(False)
+        root.addWidget(self.splitter, 1)
 
         self.main_panel = QWidget()
         self.main_panel_layout = QVBoxLayout(self.main_panel)
@@ -124,32 +30,38 @@ class FocusView(QWidget):
         self.placeholder = QWidget()
         self.main_panel_layout.addWidget(self.placeholder, 1)
 
-        self.split_panel = SplitSlotPanel()
-        self.split_panel.tile_selected.connect(self.tile_switch_requested.emit)
-        self.split_panel.hide()
+        self.selector_grid = SplitSelectorGrid()
+        self.selector_grid.tile_selected.connect(self.tile_switch_requested.emit)
+        self.selector_grid.hide()
 
-        self.rail = self.split_panel
+        self.splitter.addWidget(self.main_panel)
+        self.splitter.addWidget(self.selector_grid)
+        self.splitter.setStretchFactor(0, 7)
+        self.splitter.setStretchFactor(1, 3)
+        self._apply_default_split_sizes()
 
-        root.addWidget(self.main_panel, 1)
-        root.addWidget(self.split_panel, 0)
+    def _apply_default_split_sizes(self) -> None:
+        self.splitter.setSizes([980, 420])
 
     def is_split_panel_visible(self) -> bool:
-        return self.split_panel.isVisible()
+        return self.selector_grid.isVisible()
 
     def show_split_panel(self) -> None:
-        self.split_panel.show()
+        self.selector_grid.show()
+        self._apply_default_split_sizes()
 
     def hide_split_panel(self) -> None:
-        self.split_panel.hide()
+        self.selector_grid.hide()
+        self.splitter.setSizes([1, 0])
 
     def toggle_split_panel(self) -> None:
-        if self.split_panel.isVisible():
-            self.split_panel.hide()
+        if self.selector_grid.isVisible():
+            self.hide_split_panel()
         else:
-            self.split_panel.show()
+            self.show_split_panel()
 
     def refresh_slots(self, tiles: list[TileState], active_tile_id: int | None) -> None:
-        self.split_panel.refresh(tiles, active_tile_id)
+        self.selector_grid.refresh(tiles, active_tile_id)
 
     def set_tile_widget(self, tile_widget: QWidget) -> None:
         self.clear_tile_widget()
@@ -164,6 +76,3 @@ class FocusView(QWidget):
                 widget.setParent(None)
         self.main_panel_layout.addWidget(self.placeholder, 1)
         self.placeholder.show()
-
-    def set_focus_title(self, text: str) -> None:
-        _ = text
