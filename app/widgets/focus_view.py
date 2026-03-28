@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
@@ -10,6 +11,7 @@ from app.widgets.split_selector import SplitSelectorGrid
 
 class FocusView(QWidget):
     tile_switch_requested = Signal(int)
+    split_visibility_changed = Signal(bool)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -49,10 +51,12 @@ class FocusView(QWidget):
     def show_split_panel(self) -> None:
         self.selector_grid.show()
         self._apply_default_split_sizes()
+        self.split_visibility_changed.emit(True)
 
     def hide_split_panel(self) -> None:
         self.selector_grid.hide()
         self.splitter.setSizes([1, 0])
+        self.split_visibility_changed.emit(False)
 
     def toggle_split_panel(self) -> None:
         if self.selector_grid.isVisible():
