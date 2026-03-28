@@ -77,6 +77,7 @@ class WebTile(QFrame):
         self._web_view: QWebEngineView | None = None
         self._page: TileWebPage | None = None
         self._toolbar_focus_mode = False
+        self._split_button_active = False
 
         self.setObjectName("TileFrame")
         self.setProperty("focused", False)
@@ -113,13 +114,20 @@ class WebTile(QFrame):
         self.style().polish(self)
         self._emit_state()
 
+    def set_split_button_active(self, active: bool) -> None:
+        self._split_button_active = active
+        if self._browser_container is None:
+            return
+        self._refresh_split_button_state()
+
     def set_toolbar_focus_mode(self, in_focus_mode: bool) -> None:
         self._toolbar_focus_mode = in_focus_mode
         if self._browser_container is None:
             return
+
         if in_focus_mode:
             self.focus_button.setText("Grid")
-            self.focus_button.setToolTip("Return to grid")
+            self.focus_button.setToolTip("Retour à la grille")
             self.focus_button.setProperty("role", "nav")
             self.split_button.show()
         else:
@@ -127,12 +135,23 @@ class WebTile(QFrame):
             self.focus_button.setToolTip("Open this tile in focus mode")
             self.focus_button.setProperty("role", "accent")
             self.split_button.hide()
+            self._split_button_active = False
 
         self.focus_button.style().unpolish(self.focus_button)
         self.focus_button.style().polish(self.focus_button)
+        self._refresh_split_button_state()
+        self._apply_navigation_state()
+
+    def _refresh_split_button_state(self) -> None:
+        if self._browser_container is None:
+            return
+        self.split_button.setText("Masquer split" if self._split_button_active else "Split")
+        self.split_button.setToolTip(
+            "Masquer le sélecteur split" if self._split_button_active else "Split this focused page"
+        )
+        self.split_button.setProperty("role", "nav" if self._split_button_active else "accent")
         self.split_button.style().unpolish(self.split_button)
         self.split_button.style().polish(self.split_button)
-        self._apply_navigation_state()
 
     def _build_empty_page(self) -> QWidget:
         page = QWidget()
@@ -181,7 +200,14 @@ class WebTile(QFrame):
         layout.addStretch(1)
         return page
 
-    def _configure_toolbar_button(self, button: QPushButton, tooltip: str, role: str, *, fixed_size: QSize | None = TOOLBAR_BUTTON_SIZE) -> None:
+    def _configure_toolbar_button(
+        self,
+        button: QPushButton,
+        tooltip: str,
+        role: str,
+        *,
+        fixed_size: QSize | None = TOOLBAR_BUTTON_SIZE,
+    ) -> None:
         button.setToolTip(tooltip)
         button.setProperty("compact", True)
         button.setProperty("role", role)
@@ -191,6 +217,7 @@ class WebTile(QFrame):
     def _ensure_browser_page(self) -> None:
         if self._browser_container is not None:
             return
+
         container = QWidget()
         container_layout = QVBoxLayout(container)
         container_layout.setContentsMargins(0, 0, 0, 0)
