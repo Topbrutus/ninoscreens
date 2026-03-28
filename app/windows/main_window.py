@@ -147,6 +147,7 @@ class MainWindow(QMainWindow):
 
         self.focus_view = FocusView()
         self.focus_view.tile_switch_requested.connect(self.switch_focus_tile)
+        self.focus_view.split_visibility_changed.connect(self._on_split_visibility_changed)
 
         self.main_stack.addWidget(self.page_stack)
         self.main_stack.addWidget(self.focus_view)
@@ -208,7 +209,12 @@ class MainWindow(QMainWindow):
         keep_split = self.focus_view.is_split_panel_visible()
         self._show_page_for_tile(tile_id)
         self._refresh_top_state()
-        QTimer.singleShot(0, lambda tid=tile_id, keep=keep_split: self.enter_focus_mode(tid, show_split_panel=keep))
+        QTimer.singleShot(
+            0,
+            lambda tid=tile_id, keep=keep_split: self.enter_focus_mode(
+                tid, show_split_panel=keep
+            ),
+        )
 
     def toggle_split_panel_for_focused_tile(self, tile_id: int) -> None:
         if self._focused_tile_id is None:
@@ -222,13 +228,17 @@ class MainWindow(QMainWindow):
         if tile_id not in self.tiles:
             return
 
-        if self._focused_tile_id == tile_id and self.main_stack.currentWidget() is self.focus_view:
+        if (
+            self._focused_tile_id == tile_id
+            and self.main_stack.currentWidget() is self.focus_view
+        ):
             if show_split_panel:
                 self.focus_view.show_split_panel()
             else:
                 self.focus_view.hide_split_panel()
             self._refresh_top_state()
             return
+
         self._show_page_for_tile(tile_id)
         self.page_stack.setCurrentIndex(self._tile_page_index(tile_id))
 
@@ -279,10 +289,12 @@ class MainWindow(QMainWindow):
         self.page_grids[self._tile_page_index(tile_id)].remove_tile(tile)
 
     def _return_tile_to_grid(self, tile_id: int) -> None:
-        tile = self.tiles[tile_id]
+        tile = self.tiles[tile_id
         self.focus_view.clear_tile_widget()
         self.page_stack.setCurrentIndex(self._tile_page_index(tile_id))
-        self.page_grids[self._tile_page_index(tile_id)].place_tile(tile, tile_id % TILES_PER_PAGE)
+        self.page_grids[self._tile_page_index(tile_id)].place_tile(
+            tile, tile_id % TILES_PER_PAGE
+        )
 
     def _show_active_workspace(self) -> None:
         self.main_stack.setCurrentWidget(self.page_stack)
@@ -293,13 +305,17 @@ class MainWindow(QMainWindow):
 
     def _sync_focus_flags(self) -> None:
         in_focus_view = self.main_stack.currentWidget() is self.focus_view
+        split_visible = self.focus_view.is_split_panel_visible()
         for tile_id, tile in self.tiles.items():
             is_active = tile_id == self._focused_tile_id
             if tile.state.is_focused != is_active:
                 tile.set_focus_flag(is_active)
             tile.set_toolbar_focus_mode(in_focus_view and is_active)
+            tile.set_split_button_active(in_focus_view and is_active and split_visible)
 
-        self.app_state.tiles = [replace(tile.state) for _, tile in sorted(self.tiles.items())]
+        self.app_state.tiles = [
+            replace(tile.state) for _, tile in sorted(self.tiles.items())
+        ]
         self.focus_view.refresh_slots(self.app_state.tiles, self._focused_tile_id)
         self.page_matrix.refresh_all_slots(self.app_state.tiles)
 
@@ -323,11 +339,23 @@ class MainWindow(QMainWindow):
         elif self.app_state.active_view == "run":
             self.mode_label.setText("Page RUN / Corvo")
         else:
-            self.mode_label.setText(f"Page {self.app_state.current_page_index + 1} / {PAGE_COUNT}")
+            self.mode_label.setText(
+                f"Page {self.app_state.current_page_index + 1} / {PAGE_COUNT}"
+            )
 
-        self.summary_label.setText(f"{loaded}/{TILE_COUNT} chargés • {loading} en chargement • {hot} rouges mémoire")
-        self.page_matrix.set_active_slot(self._current_matrix_slot(), run_active=self.app_state.active_view == "run")
+        self.summary_label.setText(
+            f"{loaded}/{TILE_COUNT} chargés • {loading} en chargement • {hot} rouges mémoire"
+        )
+        self.page_matrix.set_active_slot(
+            self._current_matrix_slot(),
+            run_active=self.app_state.active_view == "run",
+        )
         self.focus_exit_button.setEnabled(self._focused_tile_id is not None)
+
+    def _on_split_visibility_changed(self, visible: bool) -> None:
+        _ = visible
+        self._sync_focus_flags()
+        self._refresh_top_state()
 
     def toggle_global_fullscreen(self) -> None:
         if self.isFullScreen():
