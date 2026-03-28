@@ -43,11 +43,16 @@ class ThumbnailCard(QFrame):
         self.index_label = QLabel(f"#{tile_id + 1}")
         self.index_label.setObjectName("SecondaryText")
 
+        self.site_icon_label = QLabel()
+        self.site_icon_label.setFixedSize(16, 16)
+        self.site_icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
         self.title_label = QLabel(f"Carreau {tile_id + 1}")
         self.title_label.setWordWrap(True)
 
         header.addWidget(self.status_dot, 0, Qt.AlignmentFlag.AlignTop)
         header.addWidget(self.index_label, 0, Qt.AlignmentFlag.AlignTop)
+        header.addWidget(self.site_icon_label, 0, Qt.AlignmentFlag.AlignTop)
         header.addWidget(self.title_label, 1)
 
         self.preview_label = QLabel()
@@ -83,6 +88,15 @@ class ThumbnailCard(QFrame):
             color = PALETTE.empty
         self._update_status_dot(color)
 
+        icon_pixmap = state.site_icon or self._placeholder_icon(state)
+        self.site_icon_label.setPixmap(
+            icon_pixmap.scaled(
+                QSize(16, 16),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+
         pixmap = state.thumbnail or self._placeholder_preview(state)
         scaled = pixmap.scaled(
             THUMBNAIL_IMAGE_SIZE,
@@ -112,6 +126,20 @@ class ThumbnailCard(QFrame):
             Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
             state.display_title,
         )
+        painter.end()
+        return pixmap
+
+    def _placeholder_icon(self, state: TileState) -> QPixmap:
+        pixmap = QPixmap(QSize(16, 16))
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(QColor(PALETTE.panel_bg))
+        painter.setPen(QColor(PALETTE.border))
+        painter.drawRoundedRect(0, 0, 15, 15, 4, 4)
+        painter.setPen(QColor(PALETTE.text_secondary))
+        fallback = (state.domain[:1] or state.display_title[:1] or str(state.tile_id + 1)).upper()
+        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, fallback)
         painter.end()
         return pixmap
 
@@ -154,5 +182,5 @@ class ThumbnailRail(QFrame):
 
     def refresh(self, states: Iterable[TileState], active_tile_id: int | None) -> None:
         for state in states:
-            card = self.cards[state.tile_id]
+            card = self.cards[state.tile_id
             card.update_from_state(state, active_tile_id == state.tile_id)
