@@ -27,6 +27,7 @@ class SplitSlotPanel(QWidget):
         self.setObjectName("SplitSlotPanel")
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         self.setMinimumWidth(_SPLIT_PANEL_WIDTH)
+        self.setMaximumWidth(_SPLIT_PANEL_WIDTH)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -83,6 +84,7 @@ class SplitSlotPanel(QWidget):
                     border_state = "ready"
                 else:
                     border_state = "idle"
+
                 if state.has_content:
                     button.setToolTip(f"{state.display_title} • {state.memory_mb} MB")
                 else:
@@ -101,11 +103,8 @@ class SplitSlotPanel(QWidget):
 
 class FocusView(QWidget):
     """
-    Split final layout:
-    - active page on the left
-    - 36 slot buttons on the right
-
-    The tile keeps its own toolbar, so we do not add another focus header here.
+    Focus first.
+    Split chooser appears only when requested.
     """
 
     tile_switch_requested = Signal(int)
@@ -125,11 +124,32 @@ class FocusView(QWidget):
         self.placeholder = QWidget()
         self.main_panel_layout.addWidget(self.placeholder, 1)
 
-        self.rail = SplitSlotPanel()
-        self.rail.tile_selected.connect(self.tile_switch_requested.emit)
+        self.split_panel = SplitSlotPanel()
+        self.split_panel.tile_selected.connect(self.tile_switch_requested.emit)
+        self.split_panel.hide()
+
+        self.rail = self.split_panel
 
         root.addWidget(self.main_panel, 1)
-        root.addWidget(self.rail, 0)
+        root.addWidget(self.split_panel, 0)
+
+    def is_split_panel_visible(self) -> bool:
+        return self.split_panel.isVisible()
+
+    def show_split_panel(self) -> None:
+        self.split_panel.show()
+
+    def hide_split_panel(self) -> None:
+        self.split_panel.hide()
+
+    def toggle_split_panel(self) -> None:
+        if self.split_panel.isVisible():
+            self.split_panel.hide()
+        else:
+            self.split_panel.show()
+
+    def refresh_slots(self, tiles: list[TileState], active_tile_id: int | None) -> None:
+        self.split_panel.refresh(tiles, active_tile_id)
 
     def set_tile_widget(self, tile_widget: QWidget) -> None:
         self.clear_tile_widget()
@@ -146,5 +166,4 @@ class FocusView(QWidget):
         self.placeholder.show()
 
     def set_focus_title(self, text: str) -> None:
-        # Kept only for API compatibility with the existing main window.
         _ = text
