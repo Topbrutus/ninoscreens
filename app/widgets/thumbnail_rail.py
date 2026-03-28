@@ -182,5 +182,6 @@ class ThumbnailRail(QFrame):
 
     def refresh(self, states: Iterable[TileState], active_tile_id: int | None) -> None:
         for state in states:
-            card = self.cards[state.tile_id
-            card.update_from_state(state, active_tile_id == state.tile_id)
+            card = self.cards.get(state.tile_id)
+            if card is not None:
+                card.update_from_state(state, active_tile_id == state.tile_id)
