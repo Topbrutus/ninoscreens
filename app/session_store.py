@@ -47,11 +47,13 @@ def serialize_app_state(app_state: AppState) -> dict[str, Any]:
         }
 
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "focused_tile_id": app_state.focused_tile_id,
         "is_fullscreen": app_state.is_fullscreen,
         "current_page_index": app_state.current_page_index,
         "active_view": app_state.active_view,
+        "last_selected_tile_id": app_state.last_selected_tile_id,
+        "split_panel_visible": app_state.split_panel_visible,
         "window": window_payload,
         "tiles": tiles_payload,
     }
