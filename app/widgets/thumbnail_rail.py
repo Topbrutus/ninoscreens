@@ -135,7 +135,7 @@ class ThumbnailCard(QFrame):
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setBrush(QColor(PALETTE.panel_bg))
-        painter.setPen(QColor(PALETTE.border))
+        painter.setPen(QColor(PALETTE.panel_border))
         painter.drawRoundedRect(0, 0, 15, 15, 4, 4)
         painter.setPen(QColor(PALETTE.text_secondary))
         fallback = (state.domain[:1] or state.display_title[:1] or str(state.tile_id + 1)).upper()
