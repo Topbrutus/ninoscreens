@@ -78,7 +78,7 @@ class MainWindow(QMainWindow):
 
         self.window_title_label = QLabel(APP_NAME)
         self.window_title_label.setStyleSheet("font-size: 16px; font-weight: 700;")
-        self.mode_label = QLabel("Page 1 / 3")
+        self.mode_label = QLabel(f"Page 1 / {PAGE_COUNT}")
         self.mode_label.setObjectName("SecondaryText")
         self.summary_label = QLabel("")
         self.summary_label.setObjectName("MutedText")
@@ -106,13 +106,15 @@ class MainWindow(QMainWindow):
 
         self.pages_button = QPushButton("Pages")
         self.pages_button.setProperty("compact", True)
-        self.pages_button.clicked.connect(lambda: self.show_tile_page(self.app_state.current_page_index))
+        self.pages_button.clicked.connect(
+            lambda: self.show_tile_page(self.app_state.current_page_index)
+        )
 
-        self.focus_exit_button = QPushButton("Sortir focus")
+        self.focus_exit_button = QPushButton("Quit focus")
         self.focus_exit_button.setProperty("compact", True)
         self.focus_exit_button.clicked.connect(self.exit_focus_mode)
 
-        self.fullscreen_button = QPushButton("Plein écran")
+        self.fullscreen_button = QPushButton("Fullscreen")
         self.fullscreen_button.setProperty("compact", True)
         self.fullscreen_button.clicked.connect(self.toggle_global_fullscreen)
 
@@ -289,7 +291,7 @@ class MainWindow(QMainWindow):
         self.page_grids[self._tile_page_index(tile_id)].remove_tile(tile)
 
     def _return_tile_to_grid(self, tile_id: int) -> None:
-        tile = self.tiles[tile_id
+        tile = self.tiles[tile_id]
         self.focus_view.clear_tile_widget()
         self.page_stack.setCurrentIndex(self._tile_page_index(tile_id))
         self.page_grids[self._tile_page_index(tile_id)].place_tile(
@@ -306,6 +308,7 @@ class MainWindow(QMainWindow):
     def _sync_focus_flags(self) -> None:
         in_focus_view = self.main_stack.currentWidget() is self.focus_view
         split_visible = self.focus_view.is_split_panel_visible()
+
         for tile_id, tile in self.tiles.items():
             is_active = tile_id == self._focused_tile_id
             if tile.state.is_focused != is_active:
@@ -335,16 +338,16 @@ class MainWindow(QMainWindow):
 
         if self._focused_tile_id is not None:
             prefix = "Split" if self.focus_view.is_split_panel_visible() else "Focus"
-            self.mode_label.setText(f"{prefix} • carreau {self._focused_tile_id + 1}")
+            self.mode_label.setText(f"{prefix} - tile {self._focused_tile_id + 1}")
         elif self.app_state.active_view == "run":
-            self.mode_label.setText("Page RUN / Corvo")
+            self.mode_label.setText("RUN / Corvo")
         else:
             self.mode_label.setText(
                 f"Page {self.app_state.current_page_index + 1} / {PAGE_COUNT}"
             )
 
         self.summary_label.setText(
-            f"{loaded}/{TILE_COUNT} chargés • {loading} en chargement • {hot} rouges mémoire"
+            f"{loaded}/{TILE_COUNT} loaded - {loading} loading - {hot} hot memory"
         )
         self.page_matrix.set_active_slot(
             self._current_matrix_slot(),
@@ -360,10 +363,10 @@ class MainWindow(QMainWindow):
     def toggle_global_fullscreen(self) -> None:
         if self.isFullScreen():
             self.showNormal()
-            self.fullscreen_button.setText("Plein écran")
+            self.fullscreen_button.setText("Fullscreen")
         else:
             self.showFullScreen()
-            self.fullscreen_button.setText("Quitter plein écran")
+            self.fullscreen_button.setText("Exit fullscreen")
 
     def resizeEvent(self, event) -> None:
         self.app_state.window_size = self.size()
