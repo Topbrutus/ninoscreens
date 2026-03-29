@@ -8,6 +8,8 @@ sr = None
 from PySide6.QtCore import QObject, Signal, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
+    QListWidget,
+    QListWidgetItem,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -30,9 +32,7 @@ class _VoiceWorker(QObject):
         self._running = False
 
     def listen_once(self) -> None:
-        self.error.emit("Micro — choisir le device dans le dropdown puis reessayer.")
-        self._running = False
-        return
+        self._running = True
 
         def _run() -> None:
             global sr, SR_AVAILABLE
@@ -164,8 +164,8 @@ class RunWorkspace(QFrame):
 
         self.btn_micro = MicButton()
         self.btn_micro.setToolTip("Micro global — visible partout")
-        self.btn_micro.mic_activated.connect(self._start_listening)
-        self.btn_micro.mic_deactivated.connect(self._stop_listening)
+        self.btn_micro.mic_activated.connect(self._toggle_mic_drawer)
+        self.btn_micro.mic_deactivated.connect(self._toggle_mic_drawer)
         tools_layout.addWidget(self.btn_micro, 1, 1)
 
         self.mic_combo = QComboBox()
@@ -180,7 +180,6 @@ class RunWorkspace(QFrame):
                 self.mic_combo.setCurrentIndex(idx)
         except Exception:
             pass
-        tools_layout.addWidget(self.mic_combo, 1, 2)
         self.mic_combo.currentIndexChanged.connect(self._on_mic_changed)
         self.tool_buttons["micro"] = self.btn_micro
 
@@ -189,6 +188,47 @@ class RunWorkspace(QFrame):
         btn_tools.setEnabled(False)
         btn_tools.setToolTip("Extensions — bientot")
         tools_layout.addWidget(btn_tools, 1, 2)
+
+        mic_row = QHBoxLayout()
+        mic_row.setContentsMargins(0, 0, 0, 0)
+        mic_row.setSpacing(8)
+        mic_label = QLabel("Device micro :")
+        mic_label.setObjectName("MutedText")
+        mic_row.addWidget(mic_label)
+        mic_row.addWidget(self.mic_combo, 1)
+
+        # --- Drawer micro ---
+        self.mic_drawer = QFrame()
+        self.mic_drawer.setObjectName("TopBar")
+        self.mic_drawer.hide()
+        drawer_layout = QVBoxLayout(self.mic_drawer)
+        drawer_layout.setContentsMargins(8, 8, 8, 8)
+        drawer_layout.setSpacing(6)
+        drawer_title = QLabel("Choisir le micro :")
+        drawer_title.setObjectName("MutedText")
+        drawer_layout.addWidget(drawer_title)
+        self.mic_list = QListWidget()
+        self.mic_list.setMaximumHeight(120)
+        self.mic_list.addItem("default")
+        try:
+            import speech_recognition as _sr
+            for i, name in enumerate(_sr.Microphone.list_microphone_names()):
+                item = QListWidgetItem(name)
+                item.setData(32, i)
+                self.mic_list.addItem(item)
+            for i in range(self.mic_list.count()):
+                if "USB Audio" in self.mic_list.item(i).text():
+                    self.mic_list.setCurrentRow(i)
+                    idx = self.mic_list.item(i).data(32)
+                    self._mic_index = idx
+                    break
+        except Exception:
+            pass
+        drawer_layout.addWidget(self.mic_list)
+        btn_activate = QPushButton("Activer ce micro")
+        btn_activate.setProperty("role", "accent")
+        btn_activate.clicked.connect(self._activate_selected_mic)
+        drawer_layout.addWidget(btn_activate)
 
         # --- Mode toggle ---
         mode_row = QHBoxLayout()
@@ -268,6 +308,7 @@ class RunWorkspace(QFrame):
         root.addWidget(title)
         root.addWidget(subtitle)
         root.addWidget(tools_frame)
+        root.addWidget(self.mic_drawer)
         root.addLayout(mode_row)
         root.addWidget(win_frame)
         root.addWidget(self.monitor, 1)
@@ -280,6 +321,25 @@ class RunWorkspace(QFrame):
         self._mic_index = None if device_index == -1 else device_index
         name = self.mic_combo.currentText()
         self.append_system_message(f"Micro selectionne : {name}", tone="info")
+
+    def _toggle_mic_drawer(self) -> None:
+        if self.mic_drawer.isVisible():
+            self.mic_drawer.hide()
+            self.btn_micro.set_listening(False)
+        else:
+            self.mic_drawer.show()
+
+    def _activate_selected_mic(self) -> None:
+        item = self.mic_list.currentItem()
+        if item is None:
+            return
+        name = item.text()
+        idx = item.data(32) if item.data(32) is not None else None
+        self._mic_index = idx
+        self.mic_drawer.hide()
+        self.btn_micro.set_listening(False)
+        self.append_system_message(f"Micro actif : {name}", tone="success")
+        self._start_listening()
 
     def _set_mode(self, mode: str) -> None:
         self._mode = mode
