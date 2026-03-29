@@ -4,7 +4,8 @@ from __future__ import annotations
 from dataclasses import replace
 
 from PySide6.QtCore import QTimer, Qt, QUrl, Signal, QSize
-from PySide6.QtGui import QColor, QPainter, QPixmap
+from PySide6.QtGui import QColor, QPainter, QPixmap, QIcon
+
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
@@ -65,6 +66,7 @@ class WebTile(QFrame):
     memory_requested = Signal(int)
     focus_requested = Signal(int)
     grid_requested = Signal(int)
+    split_requested = Signal(int)
 
     def __init__(self, tile_id: int, profile: QWebEngineProfile, parent=None) -> None:
         super().__init__(parent)
@@ -75,6 +77,7 @@ class WebTile(QFrame):
         self._web_view: QWebEngineView | None = None
         self._page: TileWebPage | None = None
         self._toolbar_focus_mode = False
+        self._split_button_active = False
 
         self.setObjectName("TileFrame")
         self.setProperty("focused", False)
@@ -103,26 +106,52 @@ class WebTile(QFrame):
         return self._state
 
     def set_focus_flag(self, focused: bool) -> None:
+        if self._state.is_focused == focused and self.property("focused") == focused:
+            return
         self._state.is_focused = focused
         self.setProperty("focused", focused)
         self.style().unpolish(self)
         self.style().polish(self)
         self._emit_state()
 
+    def set_split_button_active(self, active: bool) -> None:
+        self._split_button_active = active
+        if self._browser_container is None:
+            return
+        self._refresh_split_button_state()
+
     def set_toolbar_focus_mode(self, in_focus_mode: bool) -> None:
         self._toolbar_focus_mode = in_focus_mode
         if self._browser_container is None:
             return
+
         if in_focus_mode:
-            self.focus_button.setText("Grid")
-            self.focus_button.setToolTip("Return to grid")
+            self.focus_button.setText("▦")
+            self.focus_button.setToolTip("Retour à la grille")
             self.focus_button.setProperty("role", "nav")
+            self.split_button.show()
         else:
-            self.focus_button.setText("Focus")
-            self.focus_button.setToolTip("Open this tile in split mode")
+            self.focus_button.setText("⛶")
+            self.focus_button.setToolTip("Open this tile in focus mode")
             self.focus_button.setProperty("role", "accent")
+            self.split_button.hide()
+            self._split_button_active = False
+
         self.focus_button.style().unpolish(self.focus_button)
         self.focus_button.style().polish(self.focus_button)
+        self._refresh_split_button_state()
+        self._apply_navigation_state()
+
+    def _refresh_split_button_state(self) -> None:
+        if self._browser_container is None:
+            return
+        self.split_button.setText("⇆")
+        self.split_button.setToolTip(
+            "Masquer le sélecteur split" if self._split_button_active else "Split this focused page"
+        )
+        self.split_button.setProperty("role", "nav" if self._split_button_active else "accent")
+        self.split_button.style().unpolish(self.split_button)
+        self.split_button.style().polish(self.split_button)
 
     def _build_empty_page(self) -> QWidget:
         page = QWidget()
@@ -200,14 +229,15 @@ class WebTile(QFrame):
         header_layout.setContentsMargins(8, 6, 8, 6)
         header_layout.setSpacing(4)
 
-        self.back_button = QPushButton("Back")
-        self.forward_button = QPushButton("Forward")
-        self.reload_button = QPushButton("Reload")
+        self.back_button = QPushButton("←")
+        self.forward_button = QPushButton("→")
+        self.reload_button = QPushButton("↻")
         self.zoom_out_button = QPushButton("-")
         self.zoom_in_button = QPushButton("+")
-        self.memory_button = QPushButton("Save")
-        self.focus_button = QPushButton("Focus")
-        self.close_button = QPushButton("X")
+        self.memory_button = QPushButton("💾")
+        self.focus_button = QPushButton("⛶")
+        self.split_button = QPushButton("⇆")
+        self.close_button = QPushButton("✕")
 
         for button, tooltip, role in (
             (self.back_button, "Go back", "nav"),
@@ -216,7 +246,8 @@ class WebTile(QFrame):
             (self.zoom_out_button, "Zoom out", "zoom"),
             (self.zoom_in_button, "Zoom in", "zoom"),
             (self.memory_button, "Save this tile", "memory"),
-            (self.focus_button, "Open this tile in split mode", "accent"),
+            (self.focus_button, "Open this tile in focus mode", "accent"),
+            (self.split_button, "Split this focused page", "accent"),
             (self.close_button, "Close this tile", "danger"),
         ):
             self._configure_toolbar_button(button, tooltip, role)
@@ -236,6 +267,7 @@ class WebTile(QFrame):
         header_layout.addWidget(self.browser_url_edit, 1)
         header_layout.addWidget(self.memory_button)
         header_layout.addWidget(self.focus_button)
+        header_layout.addWidget(self.split_button)
         header_layout.addWidget(self.close_button)
 
         self.error_banner = QLabel("")
@@ -247,6 +279,7 @@ class WebTile(QFrame):
         self._page = TileWebPage(self.profile, self._web_view)
         self._page.popup_url_ready.connect(self._load_qurl)
         self._page.fullScreenRequested.connect(self._handle_page_fullscreen_request)
+        self._page.iconChanged.connect(self._on_icon_changed)
         self._web_view.setPage(self._page)
 
         self.back_button.clicked.connect(self._web_view.back)
@@ -256,6 +289,7 @@ class WebTile(QFrame):
         self.zoom_in_button.clicked.connect(lambda: self.adjust_zoom(ZOOM_STEP))
         self.memory_button.clicked.connect(lambda: self.memory_requested.emit(self.tile_id))
         self.focus_button.clicked.connect(self._on_focus_button_clicked)
+        self.split_button.clicked.connect(self._on_split_button_clicked)
         self.close_button.clicked.connect(self.reset_to_empty)
 
         self._page.loadStarted.connect(self._on_load_started)
@@ -263,7 +297,6 @@ class WebTile(QFrame):
         self._page.loadProgress.connect(self._on_load_progress)
         self._page.urlChanged.connect(self._on_url_changed)
         self._page.titleChanged.connect(self._on_title_changed)
-        self._page.iconChanged.connect(lambda _icon: self.queue_thumbnail_capture())
 
         container_layout.addWidget(header)
         container_layout.addWidget(self.error_banner)
@@ -271,14 +304,18 @@ class WebTile(QFrame):
 
         self._browser_container = container
         self.stack.addWidget(container)
-        self._apply_navigation_state()
         self.set_toolbar_focus_mode(self._toolbar_focus_mode)
+        self._apply_navigation_state()
 
     def _on_focus_button_clicked(self) -> None:
         if self._toolbar_focus_mode:
             self.grid_requested.emit(self.tile_id)
         else:
             self.focus_requested.emit(self.tile_id)
+
+    def _on_split_button_clicked(self) -> None:
+        if self._toolbar_focus_mode and self._state.has_content:
+            self.split_requested.emit(self.tile_id)
 
     def load_from_empty_input(self) -> None:
         self._navigate_from_text(self.empty_url_edit.text())
@@ -377,6 +414,7 @@ class WebTile(QFrame):
         self._state.error_message = ""
         self._state.zoom_factor = DEFAULT_ZOOM
         self._state.status = TileVisualStatus.EMPTY
+        self._state.site_icon = None
         self.stack.setCurrentWidget(self.empty_page)
         self.queue_thumbnail_capture()
         self._emit_state()
@@ -424,6 +462,14 @@ class WebTile(QFrame):
         self.queue_thumbnail_capture()
         self._emit_state()
 
+    def _on_icon_changed(self, icon: QIcon) -> None:
+        if icon.isNull():
+            self._state.site_icon = None
+        else:
+            self._state.site_icon = icon.pixmap(QSize(16, 16))
+        self.queue_thumbnail_capture()
+        self._emit_state()
+
     def _apply_navigation_state(self) -> None:
         if self._browser_container is None or self._web_view is None:
             return
@@ -435,6 +481,7 @@ class WebTile(QFrame):
         self.zoom_in_button.setEnabled(self._state.has_content)
         self.memory_button.setEnabled(self._state.has_content)
         self.focus_button.setEnabled(self._state.has_content)
+        self.split_button.setEnabled(self._state.has_content and self._toolbar_focus_mode)
         self.close_button.setEnabled(self._state.has_content)
 
     def _handle_page_fullscreen_request(self, request) -> None:

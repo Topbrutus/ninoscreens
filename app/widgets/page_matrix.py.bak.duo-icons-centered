@@ -14,7 +14,6 @@ from app.config import PAGE_COUNT, TILES_PER_PAGE
 from app.state import TileState, TileVisualStatus
 
 TILING_COLUMNS = 12
-MATRIX_ICON_SIZE = QSize(16, 16)
 
 
 class PageMatrix(QFrame):
@@ -45,7 +44,7 @@ class PageMatrix(QFrame):
             button = QPushButton(str(slot_index + 1))
             button.setMinimumWidth(36)
             button.setMinimumHeight(24)
-            button.setIconSize(QSize(52, 24))
+            button.setIconSize(QSize(32, 18))
             button.setProperty("compact", True)
             button.setProperty("role", "memory-slot")
             button.setProperty("slotIndex", slot_index)
@@ -86,26 +85,36 @@ class PageMatrix(QFrame):
             self.set_slot_state(slot_index, state)
 
     def _compose_duo_icon(self, left_pixmap: QPixmap | None, right_pixmap: QPixmap | None) -> QIcon:
-        canvas = QPixmap(52, 24)
+        canvas = QPixmap(34, 18)
         canvas.fill(Qt.GlobalColor.transparent)
 
         painter = QPainter(canvas)
         try:
             if left_pixmap is not None and not left_pixmap.isNull():
-                left_scaled = left_pixmap.scaled(
-                    20, 20,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
+                painter.drawPixmap(
+                    1, 1,
+                    left_pixmap.scaled(
+                        14, 14,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    ),
                 )
-                painter.drawPixmap(4, 2, left_scaled)
-
             if right_pixmap is not None and not right_pixmap.isNull():
-                right_scaled = right_pixmap.scaled(
-                    20, 20,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
+                painter.drawPixmap(
+                    18, 1,
+                    right_pixmap.scaled(
+                        14, 14,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    ),
                 )
-                painter.drawPixmap(28, 2, right_scaled)
+
+            if (
+                left_pixmap is not None and right_pixmap is not None
+                and not left_pixmap.isNull() and not right_pixmap.isNull()
+            ):
+                painter.setPen(Qt.GlobalColor.white)
+                painter.drawLine(17, 1, 17, 16)
         finally:
             painter.end()
 
@@ -159,7 +168,6 @@ class PageMatrix(QFrame):
             button.setProperty("active", slot_index == idx)
             button.style().unpolish(button)
             button.style().polish(button)
-
         self.run_button.setProperty("active", run_active)
         self.run_button.style().unpolish(self.run_button)
         self.run_button.style().polish(self.run_button)

@@ -32,6 +32,7 @@ class TileState:
     memory_mb: int = 0
     thumbnail: Optional[QPixmap] = None
     thumbnail_revision: int = 0
+    site_icon: Optional[QPixmap] = None
 
     @property
     def display_title(self) -> str:

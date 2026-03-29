@@ -1,9 +1,7 @@
+
 from __future__ import annotations
 
 from dataclasses import replace
-from pathlib import Path
-import json
-import subprocess
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
@@ -27,26 +25,16 @@ from app.config import (
     RUN_PAGE_INDEX,
     TILE_COUNT,
     TILES_PER_PAGE,
+    SESSION_SAVE_DEBOUNCE_MS,
 )
-from app.session_store import load_session_payload, save_session_payload, serialize_app_state
 from app.state import AppState, TileState
+from app.session_store import load_session_payload, save_session_payload, serialize_app_state
 from app.web_profile import build_shared_profile
 from app.widgets.dashboard_grid import DashboardGrid
 from app.widgets.focus_view import FocusView
 from app.widgets.page_matrix import PageMatrix
 from app.widgets.run_workspace import RunWorkspace
 from app.widgets.web_tile import WebTile
-
-
-def _clamp_int(value: object, minimum: int, maximum: int, default: int) -> int:
-    try:
-        return max(minimum, min(maximum, int(value)))
-    except (TypeError, ValueError):
-        return default
-
-
-def _coerce_bool(value: object) -> bool:
-    return bool(value)
 
 
 class MainWindow(QMainWindow):
@@ -61,19 +49,88 @@ class MainWindow(QMainWindow):
             self.app_state.tiles = [TileState(tile_id=i) for i in range(TILE_COUNT)]
 
         self.profile = build_shared_profile(self)
-
         self.tiles: dict[int, WebTile] = {}
         self.page_grids: list[DashboardGrid] = []
         self._focused_tile_id: int | None = None
-        self._split_tile_id: int | None = None
-        self._split_pairs: dict[int, int] = {}
         self._last_selected_tile_id: int = 0
+        self._split_tile_id: int | None = None
+        self._restoring_session = False
+        self._session_save_timer = QTimer(self)
+        self._session_save_timer.setSingleShot(True)
+        self._session_save_timer.setInterval(SESSION_SAVE_DEBOUNCE_MS)
+        self._session_save_timer.timeout.connect(self._save_session)
 
         self._build_ui()
         self._build_tiles()
         self._restore_session()
         self._sync_focus_flags()
         self._refresh_top_state()
+
+
+    def _queue_session_save(self) -> None:
+        if self._restoring_session:
+            return
+        self._session_save_timer.start()
+
+    def _save_session(self) -> None:
+        if self._restoring_session:
+            return
+        self.app_state.window_size = self.size()
+        self.app_state.tiles = [
+            replace(tile.state) for _, tile in sorted(self.tiles.items())
+        ]
+        try:
+            save_session_payload(serialize_app_state(self.app_state))
+        except OSError:
+            pass
+
+    def _restore_session(self) -> None:
+        payload = load_session_payload()
+        if not isinstance(payload, dict):
+            return
+
+        self._restoring_session = True
+        try:
+            window = payload.get("window") or {}
+            if isinstance(window, dict):
+                width = int(window.get("width", 0) or 0)
+                height = int(window.get("height", 0) or 0)
+                if width > 0 and height > 0:
+                    self.resize(width, height)
+
+            page_index = payload.get("current_page_index", 0)
+            if isinstance(page_index, int):
+                self.app_state.current_page_index = max(0, min(PAGE_COUNT - 1, page_index))
+
+            tiles_payload = payload.get("tiles") or []
+            if isinstance(tiles_payload, list):
+                for tile_payload in tiles_payload:
+                    if not isinstance(tile_payload, dict):
+                        continue
+                    tile_id = tile_payload.get("tile_id")
+                    if not isinstance(tile_id, int):
+                        continue
+                    if tile_id not in self.tiles:
+                        continue
+
+                    current_url = str(tile_payload.get("current_url", "") or "").strip()
+                    has_content = bool(tile_payload.get("has_content", False))
+                    zoom_factor = tile_payload.get("zoom_factor", 1.0)
+
+                    try:
+                        zoom_factor = float(zoom_factor)
+                    except (TypeError, ValueError):
+                        zoom_factor = 1.0
+
+                    if has_content and current_url:
+                        self.tiles[tile_id].restore_from_session(current_url, zoom_factor)
+
+            self.app_state.active_view = "tiles"
+            self.app_state.focused_tile_id = None
+            self._show_active_workspace()
+            self.page_stack.setCurrentIndex(self.app_state.current_page_index)
+        finally:
+            self._restoring_session = False
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -163,7 +220,6 @@ class MainWindow(QMainWindow):
             self.page_stack.addWidget(page)
 
         self.run_workspace = RunWorkspace()
-        self.run_workspace.prompt_submitted.connect(self.on_run_prompt_submitted)
         self.page_stack.addWidget(self.run_workspace)
 
         self.focus_view = FocusView()
@@ -196,7 +252,6 @@ class MainWindow(QMainWindow):
             self.app_state.tiles[state_object.tile_id] = state_object
 
         self.focus_view.refresh_slots(self.app_state.tiles, self._focused_tile_id)
-        self.page_matrix.set_split_pairs(self._split_pairs, self.app_state.tiles)
         self.page_matrix.refresh_all_slots(self.app_state.tiles)
         self._refresh_top_state()
 
@@ -205,7 +260,6 @@ class MainWindow(QMainWindow):
 
     def _show_page_for_tile(self, tile_id: int) -> None:
         self._last_selected_tile_id = tile_id
-        self.app_state.last_selected_tile_id = tile_id
         self.app_state.current_page_index = self._tile_page_index(tile_id)
         self.app_state.active_view = "tiles"
         self.page_stack.setCurrentIndex(self.app_state.current_page_index)
@@ -215,7 +269,6 @@ class MainWindow(QMainWindow):
     def show_tile_page(self, page_index: int) -> None:
         self.app_state.current_page_index = max(0, min(PAGE_COUNT - 1, page_index))
         self.app_state.active_view = "tiles"
-
         if self._focused_tile_id is None:
             self._show_active_workspace()
         else:
@@ -228,94 +281,9 @@ class MainWindow(QMainWindow):
             self._show_active_workspace()
         self._refresh_top_state()
 
-    def on_run_prompt_submitted(self, text: str) -> None:
-        project_root = Path("/home/gaby/MonDeuxiemeProjet")
-        cli_path = project_root / "src" / "run_cli.py"
-
-        if not cli_path.exists():
-            self.run_workspace.append_system_message(
-                f"Backend RUN introuvable: {cli_path}",
-                tone="error",
-            )
-            return
-
-        try:
-            completed = subprocess.run(
-                ["python3", str(cli_path), "dispatch", "monprogramme", text],
-                cwd=str(project_root),
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-        except subprocess.CalledProcessError as exc:
-            detail = (exc.stderr or exc.stdout or f"exit code {exc.returncode}").strip()
-            self.run_workspace.append_system_message(
-                f"Envoi RUN échoué: {detail}",
-                tone="error",
-            )
-            return
-
-        output = completed.stdout.strip()
-        self.run_workspace.append_system_message(
-            output or "Commande RUN envoyée vers monprogramme.",
-            tone="success",
-        )
-
-        command_id = None
-        for line in output.splitlines():
-            if "id=" in line:
-                command_id = line.split("id=", 1)[1].strip()
-                break
-
-        if not command_id:
-            return
-
-        result_path = project_root / ".runtime" / "results" / f"{command_id}.json"
-        self._poll_run_result(command_id, result_path)
-
-    def _poll_run_result(self, command_id: str, result_path: Path, attempt: int = 0) -> None:
-        if result_path.exists():
-            try:
-                payload = json.loads(result_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                self.run_workspace.append_system_message(
-                    f"Résultat RUN illisible pour {command_id}: {exc}",
-                    tone="error",
-                )
-                return
-
-            status = str(payload.get("status", "unknown")).strip().lower()
-            detail = str(payload.get("detail", "")).strip() or f"Résultat reçu pour {command_id}"
-            tone = "success" if status in {"done", "ok", "success"} else "error"
-            self.run_workspace.append_system_message(
-                f"Résultat {status} pour {command_id}: {detail}",
-                tone=tone,
-            )
-            return
-
-        if attempt >= 30:
-            self.run_workspace.append_system_message(
-                f"Aucun résultat RUN reçu pour {command_id} après attente.",
-                tone="blocked",
-            )
-            return
-
-        QTimer.singleShot(
-            500,
-            lambda cid=command_id, rp=result_path, nxt=attempt + 1: self._poll_run_result(cid, rp, nxt),
-        )
-
     def activate_memory_slot(self, tile_id: int) -> None:
         tile_id = max(0, min(TILE_COUNT - 1, tile_id))
-
-        if self._focused_tile_id is not None and tile_id == self._focused_tile_id:
-            self._last_selected_tile_id = tile_id
-            self.app_state.current_page_index = self._tile_page_index(tile_id)
-            self.app_state.active_view = "tiles"
-            self.exit_focus_mode()
-            return
-
-        keep_split = self.focus_view.is_split_panel_visible() or (tile_id in self._split_pairs)
+        keep_split = self.focus_view.is_split_panel_visible()
         self._show_page_for_tile(tile_id)
         self._refresh_top_state()
         QTimer.singleShot(
@@ -326,12 +294,13 @@ class MainWindow(QMainWindow):
         )
 
     def toggle_split_panel_for_focused_tile(self, tile_id: int) -> None:
-        if self._focused_tile_id is None or tile_id != self._focused_tile_id:
+        if self._focused_tile_id is None:
+            return
+        if tile_id != self._focused_tile_id:
             return
 
         if not self.focus_view.is_split_panel_visible():
-            if not self._restore_saved_split_for_tile(self._focused_tile_id):
-                self.focus_view.show_split_panel()
+            self.focus_view.show_split_panel()
         elif self._split_tile_id is not None:
             self._return_split_tile_to_grid(self._split_tile_id)
             self._split_tile_id = None
@@ -350,51 +319,53 @@ class MainWindow(QMainWindow):
             self._focused_tile_id == tile_id
             and self.main_stack.currentWidget() is self.focus_view
         ):
-            restored = self._restore_saved_split_for_tile(tile_id) if show_split_panel else False
-            if not restored:
-                if show_split_panel:
-                    self.focus_view.show_split_panel()
-                else:
-                    self._clear_split_tile()
-                    self.focus_view.hide_split_panel()
-            self._sync_focus_flags()
+            if show_split_panel:
+                self.focus_view.show_split_panel()
+            else:
+                self._clear_split_tile()
+                self.focus_view.hide_split_panel()
             self._refresh_top_state()
             return
 
-        if self._focused_tile_id is not None:
-            self._clear_split_tile()
-            self._return_focus_tile_to_grid(self._focused_tile_id)
-
         self._show_page_for_tile(tile_id)
         self.page_stack.setCurrentIndex(self._tile_page_index(tile_id))
-        self._detach_tile_from_grid(tile_id)
+
+        if self._focused_tile_id is None:
+            self._detach_tile_from_grid(tile_id)
+        else:
+            previous_tile_id = self._focused_tile_id
+            self._clear_split_tile()
+            self._return_focus_tile_to_grid(previous_tile_id)
+            if previous_tile_id != tile_id:
+                self._detach_tile_from_grid(tile_id)
 
         self._focused_tile_id = tile_id
         self._last_selected_tile_id = tile_id
         self.app_state.focused_tile_id = tile_id
-        self.app_state.last_selected_tile_id = tile_id
         self.app_state.current_page_index = self._tile_page_index(tile_id)
         self.app_state.active_view = "tiles"
 
         tile = self.tiles[tile_id]
         self.focus_view.set_tile_widget(tile)
-
-        restored = self._restore_saved_split_for_tile(tile_id) if show_split_panel else False
-        if not restored:
-            if show_split_panel:
-                self.focus_view.show_split_panel()
-            else:
-                self.focus_view.hide_split_panel()
+        if show_split_panel:
+            self.focus_view.show_split_panel()
+        else:
+            self.focus_view.hide_split_panel()
 
         self.main_stack.setCurrentWidget(self.focus_view)
-
         self._sync_focus_flags()
         self._refresh_top_state()
+
+    def switch_focus_tile(self, tile_id: int) -> None:
+        keep_split = self.focus_view.is_split_panel_visible()
+        self.enter_focus_mode(tile_id, show_split_panel=keep_split)
 
     def set_split_tile(self, tile_id: int) -> None:
         if self._focused_tile_id is None:
             return
-        if tile_id not in self.tiles or tile_id == self._focused_tile_id:
+        if tile_id not in self.tiles:
+            return
+        if tile_id == self._focused_tile_id:
             return
         if self._split_tile_id == tile_id:
             return
@@ -404,38 +375,18 @@ class MainWindow(QMainWindow):
 
         self._detach_tile_from_grid(tile_id)
         self._split_tile_id = tile_id
-        self._split_pairs[self._focused_tile_id] = tile_id
-        self._split_pairs[tile_id] = self._focused_tile_id
         self.focus_view.set_split_tile_widget(self.tiles[tile_id])
         self._sync_focus_flags()
         self._refresh_top_state()
 
-    def _restore_saved_split_for_tile(self, tile_id: int) -> bool:
-        split_tile_id = self._split_pairs.get(tile_id)
-        if split_tile_id is None:
-            return False
-        if split_tile_id == tile_id or split_tile_id not in self.tiles:
-            return False
-
-        if self._split_tile_id is not None and self._split_tile_id != split_tile_id:
-            self._return_split_tile_to_grid(self._split_tile_id)
-            self._split_tile_id = None
-
-        self._detach_tile_from_grid(split_tile_id)
-        self._split_tile_id = split_tile_id
-        self.focus_view.set_split_tile_widget(self.tiles[split_tile_id])
-        return True
-
     def exit_focus_mode(self, *_args) -> None:
         if self._focused_tile_id is None:
             return
-
         self._clear_split_tile()
         self._return_focus_tile_to_grid(self._focused_tile_id)
         self.focus_view.hide_split_panel()
         self._focused_tile_id = None
         self.app_state.focused_tile_id = None
-        self.app_state.split_panel_visible = False
         self._show_active_workspace()
         self._sync_focus_flags()
         self._refresh_top_state()
@@ -443,18 +394,15 @@ class MainWindow(QMainWindow):
     def _detach_tile_from_grid(self, tile_id: int) -> None:
         tile = self.tiles[tile_id]
         parent = tile.parent()
-        if parent is getattr(self.focus_view, "main_panel", None):
+        if parent is self.focus_view.main_panel:
             return
-        if parent is getattr(self.focus_view, "split_tile_host", None):
+        if hasattr(self.focus_view, "split_tile_host") and parent is self.focus_view.split_tile_host:
             return
         self.page_grids[self._tile_page_index(tile_id)].remove_tile(tile)
 
     def _return_focus_tile_to_grid(self, tile_id: int) -> None:
         tile = self.tiles[tile_id]
-        if hasattr(self.focus_view, "clear_main_tile_widget"):
-            self.focus_view.clear_main_tile_widget()
-        else:
-            self.focus_view.clear_tile_widget()
+        self.focus_view.clear_main_tile_widget()
         self.page_stack.setCurrentIndex(self._tile_page_index(tile_id))
         self.page_grids[self._tile_page_index(tile_id)].place_tile(
             tile,
@@ -463,8 +411,7 @@ class MainWindow(QMainWindow):
 
     def _return_split_tile_to_grid(self, tile_id: int) -> None:
         tile = self.tiles[tile_id]
-        if hasattr(self.focus_view, "clear_split_tile_widget"):
-            self.focus_view.clear_split_tile_widget()
+        self.focus_view.clear_split_tile_widget()
         self.page_grids[self._tile_page_index(tile_id)].place_tile(
             tile,
             tile_id % TILES_PER_PAGE,
@@ -498,7 +445,6 @@ class MainWindow(QMainWindow):
             replace(tile.state) for _, tile in sorted(self.tiles.items())
         ]
         self.focus_view.refresh_slots(self.app_state.tiles, self._focused_tile_id)
-        self.page_matrix.set_split_pairs(self._split_pairs, self.app_state.tiles)
         self.page_matrix.refresh_all_slots(self.app_state.tiles)
 
     def _current_matrix_slot(self) -> int | None:
@@ -509,7 +455,6 @@ class MainWindow(QMainWindow):
         return self._last_selected_tile_id
 
     def _refresh_top_state(self) -> None:
-        self.page_matrix.set_split_pairs(self._split_pairs, self.app_state.tiles)
         self.page_matrix.refresh_all_slots(self.app_state.tiles)
 
         loaded = sum(1 for tile in self.app_state.tiles if tile.has_content)
@@ -517,14 +462,8 @@ class MainWindow(QMainWindow):
         hot = sum(1 for tile in self.app_state.tiles if tile.memory_mb >= 700)
 
         if self._focused_tile_id is not None:
-            if self._split_tile_id is not None:
-                self.mode_label.setText(
-                    f"Split - tile {self._focused_tile_id + 1} + tile {self._split_tile_id + 1}"
-                )
-            elif self.focus_view.is_split_panel_visible():
-                self.mode_label.setText(f"Split - tile {self._focused_tile_id + 1}")
-            else:
-                self.mode_label.setText(f"Focus - tile {self._focused_tile_id + 1}")
+            prefix = "Split" if self.focus_view.is_split_panel_visible() else "Focus"
+            self.mode_label.setText(f"{prefix} - tile {self._focused_tile_id + 1}")
         elif self.app_state.active_view == "run":
             self.mode_label.setText("RUN / Corvo")
         else:
@@ -540,10 +479,10 @@ class MainWindow(QMainWindow):
             run_active=self.app_state.active_view == "run",
         )
         self.focus_exit_button.setEnabled(self._focused_tile_id is not None)
+        self._queue_session_save()
 
     def _on_split_visibility_changed(self, visible: bool) -> None:
-        if not visible:
-            self._split_tile_id = None
+        _ = visible
         self._sync_focus_flags()
         self._refresh_top_state()
 
@@ -553,97 +492,13 @@ class MainWindow(QMainWindow):
             self.fullscreen_button.setText("Fullscreen")
         else:
             self.showFullScreen()
-            self.fullscreen_button.setText("Quitter plein écran")
-        self.app_state.is_fullscreen = self.isFullScreen()
-
-    def on_tile_state_changed(self, _state: object) -> None:
-        self._sync_focus_flags()
-        self._refresh_top_state()
-
-    def _restore_session(self) -> None:
-        payload = load_session_payload()
-        if not payload:
-            self._show_active_workspace()
-            return
-
-        window_payload = payload.get("window")
-        if isinstance(window_payload, dict):
-            width = _clamp_int(window_payload.get("width"), MINIMUM_WINDOW_SIZE.width(), 10000, DEFAULT_WINDOW_SIZE.width())
-            height = _clamp_int(window_payload.get("height"), MINIMUM_WINDOW_SIZE.height(), 10000, DEFAULT_WINDOW_SIZE.height())
-            self.resize(width, height)
-            self.app_state.window_size = self.size()
-
-        tiles_payload = payload.get("tiles")
-        if isinstance(tiles_payload, list):
-            for tile_payload in tiles_payload:
-                if not isinstance(tile_payload, dict):
-                    continue
-                tile_id = _clamp_int(tile_payload.get("tile_id"), 0, TILE_COUNT - 1, -1)
-                if tile_id not in self.tiles:
-                    continue
-                current_url = str(tile_payload.get("current_url", "") or "")
-                try:
-                    zoom_factor = float(tile_payload.get("zoom_factor", 1.0))
-                except (TypeError, ValueError):
-                    zoom_factor = 1.0
-                self.tiles[tile_id].restore_from_session(current_url=current_url, zoom_factor=zoom_factor)
-
-        self._last_selected_tile_id = _clamp_int(
-            payload.get("last_selected_tile_id"),
-            0,
-            TILE_COUNT - 1,
-            0,
-        )
-        self.app_state.last_selected_tile_id = self._last_selected_tile_id
-        self.app_state.current_page_index = _clamp_int(
-            payload.get("current_page_index"),
-            0,
-            PAGE_COUNT - 1,
-            0,
-        )
-        active_view = str(payload.get("active_view", "tiles") or "tiles")
-        self.app_state.active_view = active_view if active_view in {"tiles", "run"} else "tiles"
-
-        focused_tile_id_raw = payload.get("focused_tile_id")
-        focused_tile_id = None
-        if focused_tile_id_raw is not None:
-            candidate = _clamp_int(focused_tile_id_raw, 0, TILE_COUNT - 1, -1)
-            if candidate in self.tiles:
-                focused_tile_id = candidate
-
-        split_panel_visible = _coerce_bool(payload.get("split_panel_visible", False))
-        self.app_state.is_fullscreen = _coerce_bool(payload.get("is_fullscreen", False))
-
-        if focused_tile_id is not None:
-            self.enter_focus_mode(focused_tile_id, show_split_panel=split_panel_visible)
-        else:
-            self.app_state.focused_tile_id = None
-            self.app_state.split_panel_visible = False
-            if self.app_state.active_view == "run":
-                self.show_run_page()
-            else:
-                self.show_tile_page(self.app_state.current_page_index)
-
-        if self.app_state.is_fullscreen:
-            self.showFullScreen()
-            self.fullscreen_button.setText("Quitter plein écran")
-        else:
-            self.showNormal()
-            self.fullscreen_button.setText("Plein écran")
-
-    def _save_session(self) -> None:
-        self.app_state.window_size = self.size()
-        self.app_state.focused_tile_id = self._focused_tile_id
-        self.app_state.is_fullscreen = self.isFullScreen()
-        self.app_state.last_selected_tile_id = self._last_selected_tile_id
-        self.app_state.split_panel_visible = self.focus_view.is_split_panel_visible() if self._focused_tile_id is not None else False
-        self.app_state.tiles = [replace(tile.state) for _, tile in sorted(self.tiles.items())]
-        save_session_payload(serialize_app_state(self.app_state))
+            self.fullscreen_button.setText("Exit fullscreen")
 
     def resizeEvent(self, event) -> None:
         self.app_state.window_size = self.size()
         super().resizeEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self.app_state.window_size = self.size()
         self._save_session()
         super().closeEvent(event)
