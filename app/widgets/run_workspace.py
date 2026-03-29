@@ -7,6 +7,7 @@ SR_AVAILABLE = False
 sr = None
 from PySide6.QtCore import QObject, Signal, QTimer
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -29,7 +30,7 @@ class _VoiceWorker(QObject):
         self._running = False
 
     def listen_once(self) -> None:
-        self.error.emit("Micro non disponible sur VM — utilisez le mode ecriture.")
+        self.error.emit("Micro — choisir le device dans le dropdown puis reessayer.")
         self._running = False
         return
 
@@ -51,11 +52,13 @@ class _VoiceWorker(QObject):
                     self._running = False
                     return
                 try:
-                    mic = sr.Microphone()
+                    idx = getattr(self, '_mic_index', None)
+                    mic = sr.Microphone(device_index=idx)
                 except Exception as exc:
                     self.error.emit(f"Micro indisponible: {exc}")
                     self._running = False
                     return
+                device_index = self._mic_index if hasattr(self, '_mic_index') else None
                 with mic as source:
                     self._recognizer.adjust_for_ambient_noise(source, duration=0.5)
                     audio = self._recognizer.listen(source, timeout=6, phrase_time_limit=10)
@@ -110,6 +113,7 @@ class RunWorkspace(QFrame):
         self._voice_worker = _VoiceWorker()
         self._voice_worker.recognized.connect(self._on_voice_recognized)
         self._voice_worker.error.connect(self._on_voice_error)
+        self._mic_index = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
@@ -163,6 +167,21 @@ class RunWorkspace(QFrame):
         self.btn_micro.mic_activated.connect(self._start_listening)
         self.btn_micro.mic_deactivated.connect(self._stop_listening)
         tools_layout.addWidget(self.btn_micro, 1, 1)
+
+        self.mic_combo = QComboBox()
+        self.mic_combo.setToolTip("Choisir le micro")
+        self.mic_combo.addItem("default", -1)
+        try:
+            import speech_recognition as _sr
+            for i, name in enumerate(_sr.Microphone.list_microphone_names()):
+                self.mic_combo.addItem(name, i)
+            idx = self.mic_combo.findText("CEVCECM: USB Audio (hw:2,0)")
+            if idx >= 0:
+                self.mic_combo.setCurrentIndex(idx)
+        except Exception:
+            pass
+        tools_layout.addWidget(self.mic_combo, 1, 2)
+        self.mic_combo.currentIndexChanged.connect(self._on_mic_changed)
         self.tool_buttons["micro"] = self.btn_micro
 
         btn_tools = QPushButton("Outils+")
@@ -255,6 +274,12 @@ class RunWorkspace(QFrame):
         root.addLayout(input_row)
 
         self.append_system_message("Workspace RUN initialise. Voix, fenetres et modes actifs.")
+
+    def _on_mic_changed(self, index: int) -> None:
+        device_index = self.mic_combo.currentData()
+        self._mic_index = None if device_index == -1 else device_index
+        name = self.mic_combo.currentText()
+        self.append_system_message(f"Micro selectionne : {name}", tone="info")
 
     def _set_mode(self, mode: str) -> None:
         self._mode = mode
