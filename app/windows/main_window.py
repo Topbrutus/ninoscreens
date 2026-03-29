@@ -282,7 +282,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        if attempt >= 30:
+        if attempt >= 60:
             self.run_workspace.append_system_message(
                 f"Aucun résultat RUN reçu pour {command_id} après attente.",
                 tone="blocked",

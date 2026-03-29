@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import queue
+import re
 import subprocess
 import tempfile
 import threading
@@ -9,7 +11,6 @@ from datetime import datetime
 from PySide6.QtCore import QObject, Qt, Signal, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
-    QSlider,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QSlider,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -41,39 +43,53 @@ class _VoiceWorker(QObject):
         def _run() -> None:
             tmp = tempfile.mktemp(suffix=".wav")
             try:
-                import time
-                time.sleep(1.0)
                 rec = subprocess.Popen(
                     ["parecord", f"--device={self._device}",
                      "--file-format=wav", tmp],
                     stderr=subprocess.DEVNULL
                 )
+                import time
+                time.sleep(1.0)
+                rec2 = subprocess.Popen(
+                    ["parecord", f"--device={self._device}",
+                     "--file-format=wav", tmp],
+                    stderr=subprocess.DEVNULL
+                )
                 time.sleep(7)
-                rec.terminate()
-                rec.wait()
+                rec2.terminate()
+                rec2.wait()
 
-                # Convertir en 16000Hz mono pour Google Speech
                 tmp16 = tmp.replace(".wav", "_16k.wav")
                 subprocess.run(
                     ["sox", tmp, "-r", "16000", "-c", "1", tmp16, "vol", "5"],
                     stderr=subprocess.DEVNULL
                 )
-                import os as _os
-                if _os.path.exists(tmp16):
-                    _os.unlink(tmp)
-                    tmp = tmp16
+                if os.path.exists(tmp16):
+                    os.unlink(tmp)
+                    tmp2 = tmp16
+                else:
+                    tmp2 = tmp
 
-                import requests as _requests, base64 as _b64, os as _os
-                api_key = _os.environ.get("GOOGLE_API_KEY", "")
-                if not api_key:
-                    self.error.emit("GOOGLE_API_KEY manquant")
-                    return
-                with open(tmp, "rb") as f:
+                import requests as _req, base64 as _b64
+                key = os.environ.get("GOOGLE_API_KEY", "")
+                if not key:
+                    try:
+                        sh = open("/home/gaby/Ninoscreens/start.sh").read()
+                        m = re.search(r'GOOGLE_API_KEY="([^"]+)"', sh)
+                        if m:
+                            key = m.group(1)
+                    except Exception:
+                        pass
+
+                with open(tmp2, "rb") as f:
                     audio_b64 = _b64.b64encode(f.read()).decode()
-                resp = _requests.post(
-                    f"https://speech.googleapis.com/v1/speech:recognize?key={api_key}",
-                    json={"config": {"encoding": "LINEAR16", "sampleRateHertz": 16000, "languageCode": "fr-FR"},
-                          "audio": {"content": audio_b64}}
+
+                resp = _req.post(
+                    f"https://speech.googleapis.com/v1/speech:recognize?key={key}",
+                    json={
+                        "config": {"encoding": "LINEAR16", "sampleRateHertz": 16000, "languageCode": "fr-FR"},
+                        "audio": {"content": audio_b64}
+                    }
                 )
                 data = resp.json()
                 results = data.get("results", [])
@@ -83,14 +99,14 @@ class _VoiceWorker(QObject):
                 text = results[0]["alternatives"][0]["transcript"]
                 self.recognized.emit(text)
             except Exception as exc:
-                import traceback
-                self.error.emit(f"Erreur micro: {exc} | {traceback.format_exc()[-200:]}")
+                self.error.emit(f"Erreur micro: {exc}")
             finally:
                 self._running = False
-                try:
-                    os.unlink(tmp)
-                except Exception:
-                    pass
+                for f in [tmp]:
+                    try:
+                        os.unlink(f)
+                    except Exception:
+                        pass
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -102,7 +118,7 @@ class MicButton(QPushButton):
     def __init__(self, parent=None) -> None:
         super().__init__("MIC", parent)
         self.setProperty("compact", True)
-        self.setToolTip("Micro global — cliquer pour parler")
+        self.setToolTip("Micro global — cliquer pour choisir et activer")
         self.setCheckable(True)
         self.setFixedWidth(48)
         self.toggled.connect(self._on_toggled)
@@ -130,9 +146,12 @@ class RunWorkspace(QFrame):
         self._mode = "text"
         self._mic_active = False
         self._mic_device = PIPEWIRE_MIC
+        self._tts_queue: queue.Queue = queue.Queue()
         self._voice_worker = _VoiceWorker()
         self._voice_worker.recognized.connect(self._on_voice_recognized)
         self._voice_worker.error.connect(self._on_voice_error)
+
+        threading.Thread(target=self._tts_worker, daemon=True).start()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
@@ -189,53 +208,6 @@ class RunWorkspace(QFrame):
         btn_tools.setEnabled(False)
         tools_layout.addWidget(btn_tools, 1, 2)
 
-        # --- Drawer micro ---
-        self.mic_drawer = QFrame()
-        self.mic_drawer.setObjectName("TopBar")
-        self.mic_drawer.hide()
-        drawer_layout = QVBoxLayout(self.mic_drawer)
-        drawer_layout.setContentsMargins(8, 8, 8, 8)
-        drawer_layout.setSpacing(6)
-        drawer_title = QLabel("Choisir le micro :")
-        drawer_title.setObjectName("MutedText")
-        drawer_layout.addWidget(drawer_title)
-
-        self.mic_list = QListWidget()
-        self.mic_list.setMaximumHeight(100)
-
-        try:
-            result = subprocess.run(
-                ["pactl", "list", "sources", "short"],
-                capture_output=True, text=True
-            )
-            found = False
-            for line in result.stdout.splitlines():
-                parts = line.split()
-                if len(parts) >= 2:
-                    name = parts[1]
-                    if "monitor" in name:
-                        continue
-                    item = QListWidgetItem(name)
-                    self.mic_list.addItem(item)
-                    if "analog-stereo" in name or ("input" in name and "CEVCECM" in name):
-                        self.mic_list.setCurrentItem(item)
-                        found = True
-            if not found:
-                item = QListWidgetItem(PIPEWIRE_MIC)
-                self.mic_list.addItem(item)
-                self.mic_list.setCurrentRow(0)
-        except Exception:
-            item = QListWidgetItem(PIPEWIRE_MIC)
-            self.mic_list.addItem(item)
-            self.mic_list.setCurrentRow(0)
-
-        drawer_layout.addWidget(self.mic_list)
-
-        btn_activate = QPushButton("Activer ce micro")
-        btn_activate.setProperty("role", "accent")
-        btn_activate.clicked.connect(self._activate_selected_mic)
-        drawer_layout.addWidget(btn_activate)
-
         # --- Drawer voix ---
         self.voice_drawer = QFrame()
         self.voice_drawer.setObjectName("TopBar")
@@ -287,6 +259,47 @@ class RunWorkspace(QFrame):
         btn_close_vd.setProperty("compact", True)
         btn_close_vd.clicked.connect(lambda: self.voice_drawer.hide())
         vd_layout.addWidget(btn_close_vd)
+
+        # --- Drawer micro ---
+        self.mic_drawer = QFrame()
+        self.mic_drawer.setObjectName("TopBar")
+        self.mic_drawer.hide()
+        drawer_layout = QVBoxLayout(self.mic_drawer)
+        drawer_layout.setContentsMargins(8, 8, 8, 8)
+        drawer_layout.setSpacing(6)
+        drawer_title = QLabel("Choisir le micro :")
+        drawer_title.setObjectName("MutedText")
+        drawer_layout.addWidget(drawer_title)
+
+        self.mic_list = QListWidget()
+        self.mic_list.setMaximumHeight(100)
+
+        try:
+            result = subprocess.run(
+                ["pactl", "list", "sources", "short"],
+                capture_output=True, text=True
+            )
+            for line in result.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 2:
+                    name = parts[1]
+                    if "monitor" in name:
+                        continue
+                    item = QListWidgetItem(name)
+                    self.mic_list.addItem(item)
+                    if "analog-stereo" in name or ("input" in name and "CEVCECM" in name):
+                        self.mic_list.setCurrentItem(item)
+        except Exception:
+            item = QListWidgetItem(PIPEWIRE_MIC)
+            self.mic_list.addItem(item)
+            self.mic_list.setCurrentRow(0)
+
+        drawer_layout.addWidget(self.mic_list)
+
+        btn_activate = QPushButton("Activer ce micro")
+        btn_activate.setProperty("role", "accent")
+        btn_activate.clicked.connect(self._activate_selected_mic)
+        drawer_layout.addWidget(btn_activate)
 
         # --- Mode toggle ---
         mode_row = QHBoxLayout()
@@ -365,14 +378,69 @@ class RunWorkspace(QFrame):
         root.addWidget(title)
         root.addWidget(subtitle)
         root.addWidget(tools_frame)
-        root.addWidget(self.mic_drawer)
         root.addWidget(self.voice_drawer)
+        root.addWidget(self.mic_drawer)
         root.addLayout(mode_row)
         root.addWidget(win_frame)
         root.addWidget(self.monitor, 1)
         root.addLayout(input_row)
 
         self.append_system_message("Workspace RUN initialise. Voix, fenetres et modes actifs.")
+
+    def _tts_worker(self) -> None:
+        import requests as _req, base64 as _b64
+        while True:
+            text = self._tts_queue.get()
+            if text is None:
+                break
+            try:
+                key = os.environ.get("GOOGLE_API_KEY", "")
+                if not key:
+                    try:
+                        sh = open("/home/gaby/Ninoscreens/start.sh").read()
+                        m = re.search(r'GOOGLE_API_KEY="([^"]+)"', sh)
+                        if m:
+                            key = m.group(1)
+                    except Exception:
+                        pass
+                if not key:
+                    continue
+                voice = "fr-CA-Neural2-B"
+                if hasattr(self, "voice_combo"):
+                    voice = self.voice_combo.currentData() or voice
+                lang = voice[:5]
+                r = _req.post(
+                    f"https://texttospeech.googleapis.com/v1/text:synthesize?key={key}",
+                    json={
+                        "input": {"text": text},
+                        "voice": {"languageCode": lang, "name": voice},
+                        "audioConfig": {"audioEncoding": "MP3"}
+                    }
+                )
+                data = r.json()
+                if "audioContent" not in data:
+                    continue
+                audio = _b64.b64decode(data["audioContent"])
+                tmp = tempfile.mktemp(suffix=".mp3")
+                with open(tmp, "wb") as f:
+                    f.write(audio)
+                subprocess.run(["mpg123", "-q", tmp])
+                os.unlink(tmp)
+            except Exception as exc:
+                print(f"TTS: {exc}")
+            finally:
+                self._tts_queue.task_done()
+
+    def speak(self, text: str) -> None:
+        # Nettoyer le markdown
+        clean = re.sub(r'[*#`_~>]', '', text)
+        clean = re.sub(r'\[.*?\]', '', clean)
+        clean = re.sub(r'\s+', ' ', clean).strip()
+        if clean:
+            self._tts_queue.put(clean)
+
+    def _test_voice(self) -> None:
+        self.speak("Bonjour, je suis Nino, votre assistant vocal.")
 
     def _toggle_voice_drawer(self) -> None:
         if self.voice_drawer.isVisible():
@@ -381,45 +449,6 @@ class RunWorkspace(QFrame):
         else:
             self.voice_drawer.show()
             self.btn_voice.setChecked(True)
-
-    def speak(self, text: str) -> None:
-        import threading, requests as _req, base64 as _b64, os as _os, subprocess as _sp, tempfile as _tmp, re as _re
-        def _run():
-            try:
-                key = _os.environ.get("GOOGLE_API_KEY", "")
-                if not key:
-                    try:
-                        sh = open("/home/gaby/Ninoscreens/start.sh").read()
-                        m = _re.search(r'GOOGLE_API_KEY="([^"]+)"', sh)
-                        if m: key = m.group(1)
-                    except Exception:
-                        pass
-                if not key:
-                    print("TTS: clé manquante")
-                    return
-                voice = "fr-CA-Neural2-B"
-                if hasattr(self, "voice_combo"):
-                    voice = self.voice_combo.currentData() or voice
-                r = _req.post(
-                    f"https://texttospeech.googleapis.com/v1/text:synthesize?key={key}",
-                    json={"input": {"text": text}, "voice": {"languageCode": voice[:5], "name": voice}, "audioConfig": {"audioEncoding": "MP3"}}
-                )
-                data = r.json()
-                if "audioContent" not in data:
-                    print(f"TTS erreur: {data}")
-                    return
-                audio = _b64.b64decode(data["audioContent"])
-                tmp = _tmp.mktemp(suffix=".mp3")
-                with open(tmp, "wb") as f:
-                    f.write(audio)
-                _sp.run(["mpg123", "-q", tmp])
-                _os.unlink(tmp)
-            except Exception as exc:
-                print(f"TTS exception: {exc}")
-        threading.Thread(target=_run, daemon=True).start()
-
-    def _test_voice(self) -> None:
-        self.speak("Bonjour, je suis Nino, votre assistant vocal.")
 
     def _toggle_mic_drawer(self) -> None:
         if self.mic_drawer.isVisible():
@@ -437,7 +466,7 @@ class RunWorkspace(QFrame):
         self._voice_worker._device = name
         self.mic_drawer.hide()
         self.btn_micro.set_listening(False)
-        self.append_system_message(f"Micro actif : {name}", tone="success")
+        # silencieux
         self._start_listening()
 
     def _set_mode(self, mode: str) -> None:
@@ -472,12 +501,12 @@ class RunWorkspace(QFrame):
         self.mic_state_changed.emit(False)
 
     def _on_voice_recognized(self, text: str) -> None:
-        self.append_system_message(f"Reconnu : {text}", tone="success")
+        self.append_system_message(f"Reconnu : {text}", tone="info")
         if self._mode == "voice":
             self._dispatch_voice_command(text)
         else:
             self.input_edit.setText(text)
-        if self._mic_active:
+        if self._mic_active and self._mode == "voice":
             QTimer.singleShot(300, self._voice_worker.listen_once)
 
     def _on_voice_error(self, msg: str) -> None:
@@ -512,9 +541,28 @@ class RunWorkspace(QFrame):
         clean = text.strip()
         if not clean:
             return
+        # Filtrer le charabia technique
+        if "Commande écrite dans:" in clean:
+            return
+        if "Commande RUN en file:" in clean:
+            # Garder juste l'essentiel
+            import re as _re
+            m = _re.search(r'args: (.+?) \| id=', clean)
+            if m:
+                clean = f"Envoi : {m.group(1)}"
+            else:
+                return
+        if "Résultat done pour" in clean:
+            import re as _re
+            m = _re.search(r'Résultat done pour [^:]+: (.+)', clean)
+            if m:
+                clean = m.group(1)
         stamp = datetime.now().strftime("%H:%M:%S")
         prefix = {"info": "RUN", "success": "OK", "blocked": "BLOCK", "error": "ERR"}.get(tone, "RUN")
         self.monitor.append(f"[{stamp}] {prefix} > {clean}")
+        if tone == "success" and prefix == "OK" and len(clean) > 20:
+            import re as _re
+            self.speak(clean)
 
     def append_user_message(self, text: str) -> None:
         clean = text.strip()
