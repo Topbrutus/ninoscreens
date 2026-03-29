@@ -126,12 +126,12 @@ class WebTile(QFrame):
             return
 
         if in_focus_mode:
-            self.focus_button.setText("Grid")
+            self.focus_button.setText("▦")
             self.focus_button.setToolTip("Retour à la grille")
             self.focus_button.setProperty("role", "nav")
             self.split_button.show()
         else:
-            self.focus_button.setText("Focus")
+            self.focus_button.setText("⛶")
             self.focus_button.setToolTip("Open this tile in focus mode")
             self.focus_button.setProperty("role", "accent")
             self.split_button.hide()
@@ -145,7 +145,7 @@ class WebTile(QFrame):
     def _refresh_split_button_state(self) -> None:
         if self._browser_container is None:
             return
-        self.split_button.setText("Masquer split" if self._split_button_active else "Split")
+        self.split_button.setText("⇆")
         self.split_button.setToolTip(
             "Masquer le sélecteur split" if self._split_button_active else "Split this focused page"
         )
@@ -229,15 +229,15 @@ class WebTile(QFrame):
         header_layout.setContentsMargins(8, 6, 8, 6)
         header_layout.setSpacing(4)
 
-        self.back_button = QPushButton("Back")
-        self.forward_button = QPushButton("Forward")
-        self.reload_button = QPushButton("Reload")
+        self.back_button = QPushButton("←")
+        self.forward_button = QPushButton("→")
+        self.reload_button = QPushButton("↻")
         self.zoom_out_button = QPushButton("-")
         self.zoom_in_button = QPushButton("+")
-        self.memory_button = QPushButton("Save")
-        self.focus_button = QPushButton("Focus")
-        self.split_button = QPushButton("Split")
-        self.close_button = QPushButton("X")
+        self.memory_button = QPushButton("💾")
+        self.focus_button = QPushButton("⛶")
+        self.split_button = QPushButton("⇆")
+        self.close_button = QPushButton("✕")
 
         for button, tooltip, role in (
             (self.back_button, "Go back", "nav"),

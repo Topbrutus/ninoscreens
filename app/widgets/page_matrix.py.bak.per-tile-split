@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Signal, QSize, Qt
-from PySide6.QtGui import QIcon, QPainter, QPixmap
+from PySide6.QtCore import Signal, QSize
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 
 from app.config import PAGE_COUNT, TILES_PER_PAGE
 from app.state import TileState, TileVisualStatus
+
 
 TILING_COLUMNS = 12
 
@@ -37,14 +38,11 @@ class PageMatrix(QFrame):
         grid.setVerticalSpacing(4)
 
         self.slot_buttons: dict[int, QPushButton] = {}
-        self._tiles_cache: list[TileState] = []
-        self._split_pairs: dict[int, int] = {}
-
         for slot_index in range(PAGE_COUNT * TILES_PER_PAGE):
             button = QPushButton(str(slot_index + 1))
             button.setMinimumWidth(36)
             button.setMinimumHeight(24)
-            button.setIconSize(QSize(52, 24))
+            button.setIconSize(QSize(14, 14))
             button.setProperty("compact", True)
             button.setProperty("role", "memory-slot")
             button.setProperty("slotIndex", slot_index)
@@ -78,43 +76,10 @@ class PageMatrix(QFrame):
             return "warm"
         return "hot"
 
-    def set_split_pairs(self, split_pairs: dict[int, int], tiles: list[TileState]) -> None:
-        self._split_pairs = dict(split_pairs)
-        self._tiles_cache = list(tiles)
-        for slot_index, state in enumerate(tiles):
-            self.set_slot_state(slot_index, state)
-
-    def _compose_duo_icon(self, left_pixmap: QPixmap | None, right_pixmap: QPixmap | None) -> QIcon:
-        canvas = QPixmap(52, 24)
-        canvas.fill(Qt.GlobalColor.transparent)
-
-        painter = QPainter(canvas)
-        try:
-            if left_pixmap is not None and not left_pixmap.isNull():
-                left_scaled = left_pixmap.scaled(
-                    20, 20,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-                painter.drawPixmap(4, 2, left_scaled)
-
-            if right_pixmap is not None and not right_pixmap.isNull():
-                right_scaled = right_pixmap.scaled(
-                    20, 20,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-                painter.drawPixmap(28, 2, right_scaled)
-        finally:
-            painter.end()
-
-        return QIcon(canvas)
-
     def set_slot_state(self, slot_index: int, state: TileState) -> None:
         button = self.slot_buttons.get(slot_index)
         if button is None:
             return
-
         fill_state = self._fill_state_from_memory(state)
         if state.status is TileVisualStatus.ERROR:
             border_state = "error"
@@ -128,41 +93,32 @@ class PageMatrix(QFrame):
         button.setProperty("fillState", fill_state)
         button.setProperty("borderState", border_state)
 
-        partner_id = self._split_pairs.get(slot_index)
-        if partner_id is not None and 0 <= partner_id < len(self._tiles_cache):
-            partner_state = self._tiles_cache[partner_id]
-            button.setIcon(self._compose_duo_icon(state.site_icon, partner_state.site_icon))
-            button.setText("")
-            button.setToolTip(
-                f"Split {slot_index + 1} + {partner_id + 1} • "
-                f"{state.display_title} + {partner_state.display_title}"
-            )
+        if state.site_icon is not None:
+            button.setIcon(QIcon(state.site_icon))
         else:
-            if state.site_icon is not None and not state.site_icon.isNull():
-                button.setIcon(QIcon(state.site_icon))
-                button.setText("")
-            else:
-                button.setIcon(QIcon())
-                button.setText(str(slot_index + 1))
+            button.setIcon(QIcon())
 
-            if state.has_content:
-                button.setToolTip(f"{state.display_title} • {state.memory_mb} MB")
-            else:
-                button.setToolTip(f"Ouvrir le carreau {slot_index + 1}")
+        if state.has_content:
+            button.setToolTip(f"{state.display_title} • {state.memory_mb} MB")
+        else:
+            button.setToolTip(f"Ouvrir le carreau {slot_index + 1}")
 
         button.style().unpolish(button)
         button.style().polish(button)
 
     def set_active_slot(self, slot_index: int | None, *, run_active: bool = False) -> None:
         for idx, button in self.slot_buttons.items():
-            button.setProperty("active", slot_index == idx)
+            is_active = slot_index == idx
+            button.setProperty("active", is_active)
+            button.setText(str(idx + 1))
             button.style().unpolish(button)
             button.style().polish(button)
+
         self.run_button.setProperty("active", run_active)
+        self.run_button.setText("RUN")
         self.run_button.style().unpolish(self.run_button)
         self.run_button.style().polish(self.run_button)
 
     def refresh_all_slots(self, tiles: list[TileState]) -> None:
-        self._tiles_cache = list(tiles)
         for slot_index, state in enumerate(tiles):
             self.set_slot_state(slot_index, state)

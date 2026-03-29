@@ -23,10 +23,6 @@ class SplitSelectorGrid(QFrame):
         outer.setContentsMargins(APP_MARGIN, APP_MARGIN, APP_MARGIN, APP_MARGIN)
         outer.setSpacing(10)
 
-        title = QLabel("Split")
-        title.setObjectName("SecondaryText")
-        outer.addWidget(title)
-
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)

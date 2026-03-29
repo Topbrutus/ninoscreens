@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from pathlib import Path
-import json
-import subprocess
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
@@ -149,7 +146,6 @@ class MainWindow(QMainWindow):
             self.page_stack.addWidget(page)
 
         self.run_workspace = RunWorkspace()
-        self.run_workspace.prompt_submitted.connect(self.on_run_prompt_submitted)
         self.page_stack.addWidget(self.run_workspace)
 
         self.focus_view = FocusView()
@@ -211,83 +207,6 @@ class MainWindow(QMainWindow):
         if self._focused_tile_id is None:
             self._show_active_workspace()
         self._refresh_top_state()
-
-    def on_run_prompt_submitted(self, text: str) -> None:
-        project_root = Path("/home/gaby/MonDeuxiemeProjet")
-        cli_path = project_root / "src" / "run_cli.py"
-
-        if not cli_path.exists():
-            self.run_workspace.append_system_message(
-                f"Backend RUN introuvable: {cli_path}",
-                tone="error",
-            )
-            return
-
-        try:
-            completed = subprocess.run(
-                ["python3", str(cli_path), "dispatch", "monprogramme", text],
-                cwd=str(project_root),
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-        except subprocess.CalledProcessError as exc:
-            detail = (exc.stderr or exc.stdout or f"exit code {exc.returncode}").strip()
-            self.run_workspace.append_system_message(
-                f"Envoi RUN échoué: {detail}",
-                tone="error",
-            )
-            return
-
-        output = completed.stdout.strip()
-        self.run_workspace.append_system_message(
-            output or "Commande RUN envoyée vers monprogramme.",
-            tone="success",
-        )
-
-        command_id = None
-        for line in output.splitlines():
-            if "id=" in line:
-                command_id = line.split("id=", 1)[1].strip()
-                break
-
-        if not command_id:
-            return
-
-        result_path = project_root / ".runtime" / "results" / f"{command_id}.json"
-        self._poll_run_result(command_id, result_path)
-
-    def _poll_run_result(self, command_id: str, result_path: Path, attempt: int = 0) -> None:
-        if result_path.exists():
-            try:
-                payload = json.loads(result_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                self.run_workspace.append_system_message(
-                    f"Résultat RUN illisible pour {command_id}: {exc}",
-                    tone="error",
-                )
-                return
-
-            status = str(payload.get("status", "unknown")).strip().lower()
-            detail = str(payload.get("detail", "")).strip() or f"Résultat reçu pour {command_id}"
-            tone = "success" if status in {"done", "ok", "success"} else "error"
-            self.run_workspace.append_system_message(
-                f"Résultat {status} pour {command_id}: {detail}",
-                tone=tone,
-            )
-            return
-
-        if attempt >= 30:
-            self.run_workspace.append_system_message(
-                f"Aucun résultat RUN reçu pour {command_id} après attente.",
-                tone="blocked",
-            )
-            return
-
-        QTimer.singleShot(
-            500,
-            lambda cid=command_id, rp=result_path, nxt=attempt + 1: self._poll_run_result(cid, rp, nxt),
-        )
 
     def activate_memory_slot(self, tile_id: int) -> None:
         tile_id = max(0, min(TILE_COUNT - 1, tile_id))
