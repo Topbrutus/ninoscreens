@@ -3,7 +3,8 @@ from __future__ import annotations
 import threading
 from datetime import datetime
 
-import speech_recognition as sr
+SR_AVAILABLE = False
+sr = None
 from PySide6.QtCore import QObject, Signal, QTimer
 from PySide6.QtWidgets import (
     QFrame,
@@ -24,14 +25,31 @@ class _VoiceWorker(QObject):
 
     def __init__(self) -> None:
         super().__init__()
-        self._recognizer = sr.Recognizer()
+        self._recognizer = None
         self._running = False
 
     def listen_once(self) -> None:
-        self._running = True
+        self.error.emit("Micro non disponible sur VM — utilisez le mode ecriture.")
+        self._running = False
+        return
 
         def _run() -> None:
+            global sr, SR_AVAILABLE
+            if sr is None:
+                try:
+                    import speech_recognition as _sr
+                    sr = _sr
+                    SR_AVAILABLE = True
+                    self._recognizer = sr.Recognizer()
+                except Exception as exc:
+                    self.error.emit(f"SpeechRecognition indisponible: {exc}")
+                    self._running = False
+                    return
             try:
+                if not SR_AVAILABLE:
+                    self.error.emit("Micro non disponible sur cette VM.")
+                    self._running = False
+                    return
                 try:
                     mic = sr.Microphone()
                 except Exception as exc:
@@ -313,6 +331,7 @@ class RunWorkspace(QFrame):
         stamp = datetime.now().strftime("%H:%M:%S")
         prefix = {"info": "RUN", "success": "OK", "blocked": "BLOCK", "error": "ERR"}.get(tone, "RUN")
         self.monitor.append(f"[{stamp}] {prefix} > {clean}")
+        self.monitor.ensureCursorVisible()
 
     def append_user_message(self, text: str) -> None:
         clean = text.strip()
@@ -320,6 +339,7 @@ class RunWorkspace(QFrame):
             return
         stamp = datetime.now().strftime("%H:%M:%S")
         self.monitor.append(f"[{stamp}] YOU > {clean}")
+        self.monitor.ensureCursorVisible()
 
     def _submit_prompt(self) -> None:
         text = self.input_edit.text().strip()

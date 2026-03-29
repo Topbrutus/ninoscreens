@@ -1,0 +1,22 @@
+Démarrage dim 29 mar 2026 05:58:31 EDT
+GBM is not supported with the current configuration. Fallback to Vulkan rendering in Chromium.
+Traceback (most recent call last):
+  File "/home/gaby/Ninoscreens/main.py", line 25, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/home/gaby/Ninoscreens/main.py", line 19, in main
+    window = MainWindow()
+  File "/home/gaby/Ninoscreens/app/windows/main_window.py", line 59, in __init__
+    self._build_ui()
+    ~~~~~~~~~~~~~~^^
+  File "/home/gaby/Ninoscreens/app/windows/main_window.py", line 154, in _build_ui
+    self.run_workspace = RunWorkspace()
+                         ~~~~~~~~~~~~^^
+  File "/home/gaby/Ninoscreens/app/widgets/run_workspace.py", line 107, in __init__
+    self._voice_worker = _VoiceWorker()
+                         ~~~~~~~~~~~~^^
+  File "/home/gaby/Ninoscreens/app/widgets/run_workspace.py", line 28, in __init__
+    self._recognizer = sr.Recognizer()
+                       ^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'Recognizer'
+Fin dim 29 mar 2026 05:58:32 EDT

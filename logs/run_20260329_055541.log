@@ -1,0 +1,12 @@
+Démarrage dim 29 mar 2026 05:55:41 EDT
+GBM is not supported with the current configuration. Fallback to Vulkan rendering in Chromium.
+qt.accessibility.atspi: AtSpiAdaptor::applicationInterface does not implement "GetApplicationBusAddress" "/org/a11y/atspi/accessible/root"
+ALSA lib control.c:1575:(snd_ctl_open_noupdate) Invalid CTL hw:0
+ALSA lib control.c:1575:(snd_ctl_open_noupdate) Invalid CTL hw:0
+ALSA lib control.c:1575:(snd_ctl_open_noupdate) Invalid CTL hw:1
+ALSA lib control.c:1575:(snd_ctl_open_noupdate) Invalid CTL hw:1
+ALSA lib control.c:1575:(snd_ctl_open_noupdate) Invalid CTL hw:2
+ALSA lib control.c:1575:(snd_ctl_open_noupdate) Invalid CTL hw:2
+QTextCursor::setPosition: Position '237' out of range
+free(): invalid pointer
+Fin dim 29 mar 2026 05:55:49 EDT

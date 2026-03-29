@@ -1,0 +1,9 @@
+Démarrage dim 29 mar 2026 06:00:01 EDT
+GBM is not supported with the current configuration. Fallback to Vulkan rendering in Chromium.
+qt.accessibility.atspi: AtSpiAdaptor::applicationInterface does not implement "GetApplicationBusAddress" "/org/a11y/atspi/accessible/root"
+QTextCursor::setPosition: Position '385' out of range
+QTextCursor::setPosition: Position '385' out of range
+QTextCursor::setPosition: Position '385' out of range
+QTextCursor::setPosition: Position '385' out of range
+QTextCursor::setPosition: Position '385' out of range
+Fin dim 29 mar 2026 06:00:41 EDT
