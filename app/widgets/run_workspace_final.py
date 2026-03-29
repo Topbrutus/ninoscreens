@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-PIPEWIRE_MIC = "alsa_input.usb-Sony_CEVCECM-03.analog-stereo"
+PIPEWIRE_MIC = "alsa_input.usb-Sony_CEVCECM-03.iec958-stereo"
 
 
 class _VoiceWorker(QObject):
@@ -39,50 +39,24 @@ class _VoiceWorker(QObject):
         def _run() -> None:
             tmp = tempfile.mktemp(suffix=".wav")
             try:
-                import time
-                time.sleep(1.0)
                 rec = subprocess.Popen(
                     ["parecord", f"--device={self._device}",
                      "--file-format=wav", tmp],
                     stderr=subprocess.DEVNULL
                 )
-                time.sleep(7)
+                import time
+                time.sleep(5)
                 rec.terminate()
                 rec.wait()
 
-                # Convertir en 16000Hz mono pour Google Speech
-                tmp16 = tmp.replace(".wav", "_16k.wav")
-                subprocess.run(
-                    ["sox", tmp, "-r", "16000", "-c", "1", tmp16, "vol", "5"],
-                    stderr=subprocess.DEVNULL
-                )
-                import os as _os
-                if _os.path.exists(tmp16):
-                    _os.unlink(tmp)
-                    tmp = tmp16
-
-                import requests as _requests, base64 as _b64, os as _os
-                api_key = _os.environ.get("GOOGLE_API_KEY", "")
-                if not api_key:
-                    self.error.emit("GOOGLE_API_KEY manquant")
-                    return
-                with open(tmp, "rb") as f:
-                    audio_b64 = _b64.b64encode(f.read()).decode()
-                resp = _requests.post(
-                    f"https://speech.googleapis.com/v1/speech:recognize?key={api_key}",
-                    json={"config": {"encoding": "LINEAR16", "sampleRateHertz": 16000, "languageCode": "fr-FR"},
-                          "audio": {"content": audio_b64}}
-                )
-                data = resp.json()
-                results = data.get("results", [])
-                if not results:
-                    self.error.emit("Parole non reconnue.")
-                    return
-                text = results[0]["alternatives"][0]["transcript"]
+                import speech_recognition as sr
+                recognizer = sr.Recognizer()
+                with sr.AudioFile(tmp) as source:
+                    audio = recognizer.record(source)
+                text = recognizer.recognize_google(audio, language="fr-FR")
                 self.recognized.emit(text)
             except Exception as exc:
-                import traceback
-                self.error.emit(f"Erreur micro: {exc} | {traceback.format_exc()[-200:]}")
+                self.error.emit(f"Erreur micro: {exc}")
             finally:
                 self._running = False
                 try:
@@ -206,25 +180,16 @@ class RunWorkspace(QFrame):
                 ["pactl", "list", "sources", "short"],
                 capture_output=True, text=True
             )
-            found = False
             for line in result.stdout.splitlines():
                 parts = line.split()
                 if len(parts) >= 2:
                     name = parts[1]
-                    if "monitor" in name:
-                        continue
                     item = QListWidgetItem(name)
                     self.mic_list.addItem(item)
-                    if "analog-stereo" in name or ("input" in name and "CEVCECM" in name):
+                    if "input" in name or "CEVCECM" in name:
                         self.mic_list.setCurrentItem(item)
-                        found = True
-            if not found:
-                item = QListWidgetItem(PIPEWIRE_MIC)
-                self.mic_list.addItem(item)
-                self.mic_list.setCurrentRow(0)
         except Exception:
-            item = QListWidgetItem(PIPEWIRE_MIC)
-            self.mic_list.addItem(item)
+            self.mic_list.addItem(QListWidgetItem(PIPEWIRE_MIC))
             self.mic_list.setCurrentRow(0)
 
         drawer_layout.addWidget(self.mic_list)
