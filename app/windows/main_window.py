@@ -28,6 +28,7 @@ from app.config import (
     TILE_COUNT,
     TILES_PER_PAGE,
 )
+from app.session_store import load_session_payload, save_session_payload, serialize_app_state
 from app.state import AppState, TileState
 from app.web_profile import build_shared_profile
 from app.widgets.dashboard_grid import DashboardGrid
@@ -35,6 +36,17 @@ from app.widgets.focus_view import FocusView
 from app.widgets.page_matrix import PageMatrix
 from app.widgets.run_workspace import RunWorkspace
 from app.widgets.web_tile import WebTile
+
+
+def _clamp_int(value: object, minimum: int, maximum: int, default: int) -> int:
+    try:
+        return max(minimum, min(maximum, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_bool(value: object) -> bool:
+    return bool(value)
 
 
 class MainWindow(QMainWindow):
@@ -49,6 +61,7 @@ class MainWindow(QMainWindow):
             self.app_state.tiles = [TileState(tile_id=i) for i in range(TILE_COUNT)]
 
         self.profile = build_shared_profile(self)
+
         self.tiles: dict[int, WebTile] = {}
         self.page_grids: list[DashboardGrid] = []
         self._focused_tile_id: int | None = None
@@ -58,6 +71,7 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._build_tiles()
+        self._restore_session()
         self._sync_focus_flags()
         self._refresh_top_state()
 
@@ -191,6 +205,7 @@ class MainWindow(QMainWindow):
 
     def _show_page_for_tile(self, tile_id: int) -> None:
         self._last_selected_tile_id = tile_id
+        self.app_state.last_selected_tile_id = tile_id
         self.app_state.current_page_index = self._tile_page_index(tile_id)
         self.app_state.active_view = "tiles"
         self.page_stack.setCurrentIndex(self.app_state.current_page_index)
@@ -200,6 +215,7 @@ class MainWindow(QMainWindow):
     def show_tile_page(self, page_index: int) -> None:
         self.app_state.current_page_index = max(0, min(PAGE_COUNT - 1, page_index))
         self.app_state.active_view = "tiles"
+
         if self._focused_tile_id is None:
             self._show_active_workspace()
         else:
@@ -356,6 +372,7 @@ class MainWindow(QMainWindow):
         self._focused_tile_id = tile_id
         self._last_selected_tile_id = tile_id
         self.app_state.focused_tile_id = tile_id
+        self.app_state.last_selected_tile_id = tile_id
         self.app_state.current_page_index = self._tile_page_index(tile_id)
         self.app_state.active_view = "tiles"
 
@@ -370,6 +387,7 @@ class MainWindow(QMainWindow):
                 self.focus_view.hide_split_panel()
 
         self.main_stack.setCurrentWidget(self.focus_view)
+
         self._sync_focus_flags()
         self._refresh_top_state()
 
@@ -417,6 +435,7 @@ class MainWindow(QMainWindow):
         self.focus_view.hide_split_panel()
         self._focused_tile_id = None
         self.app_state.focused_tile_id = None
+        self.app_state.split_panel_visible = False
         self._show_active_workspace()
         self._sync_focus_flags()
         self._refresh_top_state()
@@ -534,12 +553,97 @@ class MainWindow(QMainWindow):
             self.fullscreen_button.setText("Fullscreen")
         else:
             self.showFullScreen()
-            self.fullscreen_button.setText("Exit fullscreen")
+            self.fullscreen_button.setText("Quitter plein écran")
+        self.app_state.is_fullscreen = self.isFullScreen()
+
+    def on_tile_state_changed(self, _state: object) -> None:
+        self._sync_focus_flags()
+        self._refresh_top_state()
+
+    def _restore_session(self) -> None:
+        payload = load_session_payload()
+        if not payload:
+            self._show_active_workspace()
+            return
+
+        window_payload = payload.get("window")
+        if isinstance(window_payload, dict):
+            width = _clamp_int(window_payload.get("width"), MINIMUM_WINDOW_SIZE.width(), 10000, DEFAULT_WINDOW_SIZE.width())
+            height = _clamp_int(window_payload.get("height"), MINIMUM_WINDOW_SIZE.height(), 10000, DEFAULT_WINDOW_SIZE.height())
+            self.resize(width, height)
+            self.app_state.window_size = self.size()
+
+        tiles_payload = payload.get("tiles")
+        if isinstance(tiles_payload, list):
+            for tile_payload in tiles_payload:
+                if not isinstance(tile_payload, dict):
+                    continue
+                tile_id = _clamp_int(tile_payload.get("tile_id"), 0, TILE_COUNT - 1, -1)
+                if tile_id not in self.tiles:
+                    continue
+                current_url = str(tile_payload.get("current_url", "") or "")
+                try:
+                    zoom_factor = float(tile_payload.get("zoom_factor", 1.0))
+                except (TypeError, ValueError):
+                    zoom_factor = 1.0
+                self.tiles[tile_id].restore_from_session(current_url=current_url, zoom_factor=zoom_factor)
+
+        self._last_selected_tile_id = _clamp_int(
+            payload.get("last_selected_tile_id"),
+            0,
+            TILE_COUNT - 1,
+            0,
+        )
+        self.app_state.last_selected_tile_id = self._last_selected_tile_id
+        self.app_state.current_page_index = _clamp_int(
+            payload.get("current_page_index"),
+            0,
+            PAGE_COUNT - 1,
+            0,
+        )
+        active_view = str(payload.get("active_view", "tiles") or "tiles")
+        self.app_state.active_view = active_view if active_view in {"tiles", "run"} else "tiles"
+
+        focused_tile_id_raw = payload.get("focused_tile_id")
+        focused_tile_id = None
+        if focused_tile_id_raw is not None:
+            candidate = _clamp_int(focused_tile_id_raw, 0, TILE_COUNT - 1, -1)
+            if candidate in self.tiles:
+                focused_tile_id = candidate
+
+        split_panel_visible = _coerce_bool(payload.get("split_panel_visible", False))
+        self.app_state.is_fullscreen = _coerce_bool(payload.get("is_fullscreen", False))
+
+        if focused_tile_id is not None:
+            self.enter_focus_mode(focused_tile_id, show_split_panel=split_panel_visible)
+        else:
+            self.app_state.focused_tile_id = None
+            self.app_state.split_panel_visible = False
+            if self.app_state.active_view == "run":
+                self.show_run_page()
+            else:
+                self.show_tile_page(self.app_state.current_page_index)
+
+        if self.app_state.is_fullscreen:
+            self.showFullScreen()
+            self.fullscreen_button.setText("Quitter plein écran")
+        else:
+            self.showNormal()
+            self.fullscreen_button.setText("Plein écran")
+
+    def _save_session(self) -> None:
+        self.app_state.window_size = self.size()
+        self.app_state.focused_tile_id = self._focused_tile_id
+        self.app_state.is_fullscreen = self.isFullScreen()
+        self.app_state.last_selected_tile_id = self._last_selected_tile_id
+        self.app_state.split_panel_visible = self.focus_view.is_split_panel_visible() if self._focused_tile_id is not None else False
+        self.app_state.tiles = [replace(tile.state) for _, tile in sorted(self.tiles.items())]
+        save_session_payload(serialize_app_state(self.app_state))
 
     def resizeEvent(self, event) -> None:
         self.app_state.window_size = self.size()
         super().resizeEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        self.app_state.window_size = self.size()
+        self._save_session()
         super().closeEvent(event)

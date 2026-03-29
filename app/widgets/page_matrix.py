@@ -14,6 +14,7 @@ from app.config import PAGE_COUNT, TILES_PER_PAGE
 from app.state import TileState, TileVisualStatus
 
 TILING_COLUMNS = 12
+MATRIX_ICON_SIZE = QSize(16, 16)
 
 
 class PageMatrix(QFrame):
@@ -158,6 +159,7 @@ class PageMatrix(QFrame):
             button.setProperty("active", slot_index == idx)
             button.style().unpolish(button)
             button.style().polish(button)
+
         self.run_button.setProperty("active", run_active)
         self.run_button.style().unpolish(self.run_button)
         self.run_button.style().polish(self.run_button)

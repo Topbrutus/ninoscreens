@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.config import APP_MARGIN, PALETTE, THUMBNAIL_IMAGE_SIZE
+from app.config import APP_MARGIN, PALETTE, THUMBNAIL_IMAGE_SIZE, TILE_COUNT
 from app.state import TileState, TileVisualStatus
 
 
@@ -170,7 +170,7 @@ class ThumbnailRail(QFrame):
         self.cards_layout.setSpacing(10)
 
         self.cards: dict[int, ThumbnailCard] = {}
-        for tile_id in range(9):
+        for tile_id in range(TILE_COUNT):
             card = ThumbnailCard(tile_id)
             card.clicked.connect(self.tile_selected.emit)
             self.cards[tile_id] = card
