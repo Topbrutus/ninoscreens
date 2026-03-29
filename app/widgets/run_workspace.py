@@ -6,8 +6,10 @@ import tempfile
 import threading
 from datetime import datetime
 
-from PySide6.QtCore import QObject, Signal, QTimer
+from PySide6.QtCore import QObject, Qt, Signal, QTimer
 from PySide6.QtWidgets import (
+    QComboBox,
+    QSlider,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -161,7 +163,7 @@ class RunWorkspace(QFrame):
         self.btn_voice = QPushButton("Voix")
         self.btn_voice.setProperty("compact", True)
         self.btn_voice.setCheckable(True)
-        self.btn_voice.clicked.connect(self._toggle_voice_mode)
+        self.btn_voice.clicked.connect(self._toggle_voice_drawer)
         tools_layout.addWidget(self.btn_voice, 0, 1)
         self.tool_buttons["voice"] = self.btn_voice
 
@@ -233,6 +235,58 @@ class RunWorkspace(QFrame):
         btn_activate.setProperty("role", "accent")
         btn_activate.clicked.connect(self._activate_selected_mic)
         drawer_layout.addWidget(btn_activate)
+
+        # --- Drawer voix ---
+        self.voice_drawer = QFrame()
+        self.voice_drawer.setObjectName("TopBar")
+        self.voice_drawer.hide()
+        vd_layout = QVBoxLayout(self.voice_drawer)
+        vd_layout.setContentsMargins(8, 8, 8, 8)
+        vd_layout.setSpacing(6)
+
+        vd_title = QLabel("Config voix :")
+        vd_title.setObjectName("MutedText")
+        vd_layout.addWidget(vd_title)
+
+        voice_row = QHBoxLayout()
+        voice_label = QLabel("Voix :")
+        voice_label.setObjectName("MutedText")
+        self.voice_combo = QComboBox()
+        for name, code in [
+            ("Femme FR-CA (Neural)", "fr-CA-Neural2-A"),
+            ("Homme FR-CA (Neural)", "fr-CA-Neural2-B"),
+            ("Femme FR-FR (Neural)", "fr-FR-Neural2-A"),
+            ("Homme FR-FR (Neural)", "fr-FR-Neural2-B"),
+        ]:
+            self.voice_combo.addItem(name, code)
+        self.voice_combo.setCurrentIndex(1)
+        voice_row.addWidget(voice_label)
+        voice_row.addWidget(self.voice_combo, 1)
+        vd_layout.addLayout(voice_row)
+
+        vol_row = QHBoxLayout()
+        vol_label = QLabel("Volume :")
+        vol_label.setObjectName("MutedText")
+        self.vol_slider = QSlider()
+        self.vol_slider.setOrientation(Qt.Orientation.Horizontal)
+        self.vol_slider.setMinimum(1)
+        self.vol_slider.setMaximum(10)
+        self.vol_slider.setValue(7)
+        self.vol_slider.setFixedWidth(150)
+        vol_row.addWidget(vol_label)
+        vol_row.addWidget(self.vol_slider)
+        vol_row.addStretch()
+        vd_layout.addLayout(vol_row)
+
+        btn_test_voice = QPushButton("Tester la voix")
+        btn_test_voice.setProperty("compact", True)
+        btn_test_voice.clicked.connect(self._test_voice)
+        vd_layout.addWidget(btn_test_voice)
+
+        btn_close_vd = QPushButton("Fermer")
+        btn_close_vd.setProperty("compact", True)
+        btn_close_vd.clicked.connect(lambda: self.voice_drawer.hide())
+        vd_layout.addWidget(btn_close_vd)
 
         # --- Mode toggle ---
         mode_row = QHBoxLayout()
@@ -312,12 +366,60 @@ class RunWorkspace(QFrame):
         root.addWidget(subtitle)
         root.addWidget(tools_frame)
         root.addWidget(self.mic_drawer)
+        root.addWidget(self.voice_drawer)
         root.addLayout(mode_row)
         root.addWidget(win_frame)
         root.addWidget(self.monitor, 1)
         root.addLayout(input_row)
 
         self.append_system_message("Workspace RUN initialise. Voix, fenetres et modes actifs.")
+
+    def _toggle_voice_drawer(self) -> None:
+        if self.voice_drawer.isVisible():
+            self.voice_drawer.hide()
+            self.btn_voice.setChecked(False)
+        else:
+            self.voice_drawer.show()
+            self.btn_voice.setChecked(True)
+
+    def speak(self, text: str) -> None:
+        import threading, requests as _req, base64 as _b64, os as _os, subprocess as _sp, tempfile as _tmp, re as _re
+        def _run():
+            try:
+                key = _os.environ.get("GOOGLE_API_KEY", "")
+                if not key:
+                    try:
+                        sh = open("/home/gaby/Ninoscreens/start.sh").read()
+                        m = _re.search(r'GOOGLE_API_KEY="([^"]+)"', sh)
+                        if m: key = m.group(1)
+                    except Exception:
+                        pass
+                if not key:
+                    print("TTS: clé manquante")
+                    return
+                voice = "fr-CA-Neural2-B"
+                if hasattr(self, "voice_combo"):
+                    voice = self.voice_combo.currentData() or voice
+                r = _req.post(
+                    f"https://texttospeech.googleapis.com/v1/text:synthesize?key={key}",
+                    json={"input": {"text": text}, "voice": {"languageCode": voice[:5], "name": voice}, "audioConfig": {"audioEncoding": "MP3"}}
+                )
+                data = r.json()
+                if "audioContent" not in data:
+                    print(f"TTS erreur: {data}")
+                    return
+                audio = _b64.b64decode(data["audioContent"])
+                tmp = _tmp.mktemp(suffix=".mp3")
+                with open(tmp, "wb") as f:
+                    f.write(audio)
+                _sp.run(["mpg123", "-q", tmp])
+                _os.unlink(tmp)
+            except Exception as exc:
+                print(f"TTS exception: {exc}")
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _test_voice(self) -> None:
+        self.speak("Bonjour, je suis Nino, votre assistant vocal.")
 
     def _toggle_mic_drawer(self) -> None:
         if self.mic_drawer.isVisible():
