@@ -32,13 +32,7 @@ class _VoiceWorker(QObject):
 
         def _run() -> None:
             try:
-                try:
-                    mic = sr.Microphone()
-                except Exception as exc:
-                    self.error.emit(f"Micro indisponible: {exc}")
-                    self._running = False
-                    return
-                with mic as source:
+                with sr.Microphone() as source:
                     self._recognizer.adjust_for_ambient_noise(source, duration=0.5)
                     audio = self._recognizer.listen(source, timeout=6, phrase_time_limit=10)
                 text = self._recognizer.recognize_google(audio, language="fr-FR")

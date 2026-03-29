@@ -33,7 +33,7 @@ from app.web_profile import build_shared_profile
 from app.widgets.dashboard_grid import DashboardGrid
 from app.widgets.focus_view import FocusView
 from app.widgets.page_matrix import PageMatrix
-from app.widgets.run_workspace import RunWorkspace
+from app.widgets.run_workspace import RunWorkspace, MicButton
 from app.widgets.web_tile import WebTile
 
 
@@ -128,6 +128,9 @@ class MainWindow(QMainWindow):
         controls_layout.addLayout(controls_row2)
         controls_layout.addWidget(self.fullscreen_button)
 
+        self.mic_button = MicButton()
+        controls_layout.addWidget(self.mic_button)
+
         top_layout.addWidget(title_column, 0)
         top_layout.addWidget(self.page_matrix, 1)
         top_layout.addWidget(controls_host, 0)
@@ -150,6 +153,8 @@ class MainWindow(QMainWindow):
 
         self.run_workspace = RunWorkspace()
         self.run_workspace.prompt_submitted.connect(self.on_run_prompt_submitted)
+        self.run_workspace.window_command.connect(self._on_window_command)
+        self.run_workspace.mic_state_changed.connect(self.mic_button.set_listening)
         self.page_stack.addWidget(self.run_workspace)
 
         self.focus_view = FocusView()
@@ -535,6 +540,32 @@ class MainWindow(QMainWindow):
         else:
             self.showFullScreen()
             self.fullscreen_button.setText("Exit fullscreen")
+
+    def _on_window_command(self, cmd: str) -> None:
+        low = cmd.lower().strip()
+        if low == "grille":
+            self.exit_focus_mode()
+        elif low.startswith("focus"):
+            parts = low.split()
+            if len(parts) >= 2:
+                try:
+                    self.enter_focus_mode(int(parts[1]) - 1)
+                except ValueError:
+                    pass
+        elif low.startswith("split"):
+            parts = low.replace("+", " ").split()
+            if len(parts) >= 3:
+                try:
+                    self.set_split_tile(int(parts[2]) - 1)
+                except ValueError:
+                    pass
+        elif low.startswith("page"):
+            parts = low.split()
+            if len(parts) >= 2:
+                try:
+                    self.show_tile_page(int(parts[1]) - 1)
+                except ValueError:
+                    pass
 
     def resizeEvent(self, event) -> None:
         self.app_state.window_size = self.size()
