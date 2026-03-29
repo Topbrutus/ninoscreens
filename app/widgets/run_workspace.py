@@ -301,6 +301,16 @@ class RunWorkspace(QFrame):
         btn_activate.clicked.connect(self._activate_selected_mic)
         drawer_layout.addWidget(btn_activate)
 
+        btn_close_mic = QPushButton("Fermer")
+        btn_close_mic.setProperty("compact", True)
+        btn_close_mic.clicked.connect(lambda: self.mic_drawer.hide())
+        drawer_layout.addWidget(btn_close_mic)
+
+        btn_close_mic = QPushButton("Fermer")
+        btn_close_mic.setProperty("compact", True)
+        btn_close_mic.clicked.connect(lambda: self.mic_drawer.hide())
+        drawer_layout.addWidget(btn_close_mic)
+
         # --- Mode toggle ---
         mode_row = QHBoxLayout()
         mode_row.setContentsMargins(0, 0, 0, 0)

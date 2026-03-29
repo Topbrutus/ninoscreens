@@ -58,8 +58,12 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._build_tiles()
+        self._restore_session()
         self._sync_focus_flags()
         self._refresh_top_state()
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.timeout.connect(self._save_session)
+        self._autosave_timer.start(30000)
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -212,9 +216,10 @@ class MainWindow(QMainWindow):
         self._refresh_top_state()
 
     def show_run_page(self) -> None:
+        if self._focused_tile_id is not None:
+            self.exit_focus_mode()
         self.app_state.active_view = "run"
-        if self._focused_tile_id is None:
-            self._show_active_workspace()
+        self._show_active_workspace()
         self._refresh_top_state()
 
     def on_run_prompt_submitted(self, text: str) -> None:
@@ -567,10 +572,43 @@ class MainWindow(QMainWindow):
                 except ValueError:
                     pass
 
+    def _restore_session(self) -> None:
+        try:
+            from app.session_store import load_session_payload
+            payload = load_session_payload()
+            if not payload:
+                return
+            tiles = payload.get("tiles", [])
+            for tile_data in tiles:
+                tid = tile_data.get("tile_id")
+                url = tile_data.get("current_url", "")
+                zoom = tile_data.get("zoom_factor", 1.0)
+                if tid is not None and tid in self.tiles and url:
+                    self.tiles[tid].restore_from_session(current_url=url, zoom_factor=zoom)
+            print(f"Session restaurée: {sum(1 for t in tiles if t.get('current_url'))} URLs")
+        except Exception as e:
+            print(f"Erreur restore: {e}")
+
+    def _save_session(self) -> None:
+        try:
+            from dataclasses import replace as _r
+            from app.session_store import save_session_payload, serialize_app_state
+            self.app_state.tiles = [_r(tile.state) for _, tile in sorted(self.tiles.items())]
+            self.app_state.focused_tile_id = self._focused_tile_id
+            save_session_payload(serialize_app_state(self.app_state))
+            print('Session sauvegardée!')
+        except Exception as e:
+            print(f'Erreur save_session: {e}')
+
     def resizeEvent(self, event) -> None:
         self.app_state.window_size = self.size()
         super().resizeEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self._autosave_timer.stop()
+        self._save_session()
+        for tile in self.tiles.values():
+            tile.setParent(None)
+            tile.deleteLater()
         self.app_state.window_size = self.size()
         super().closeEvent(event)
