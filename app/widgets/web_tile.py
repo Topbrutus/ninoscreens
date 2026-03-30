@@ -226,12 +226,15 @@ class WebTile(QFrame):
         header = QWidget()
         header.setObjectName("TileHeader")
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(8, 6, 8, 6)
+        header_layout.setContentsMargins(4, 2, 4, 2)
         header_layout.setSpacing(4)
+        header_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         self.back_button = QPushButton("←")
         self.forward_button = QPushButton("→")
         self.reload_button = QPushButton("↻")
+        self.stop_button = QPushButton("🛑")
+        self.clear_cache_button = QPushButton("🗑")
         self.zoom_out_button = QPushButton("-")
         self.zoom_in_button = QPushButton("+")
         self.memory_button = QPushButton("💾")
@@ -243,6 +246,8 @@ class WebTile(QFrame):
             (self.back_button, "Go back", "nav"),
             (self.forward_button, "Go forward", "nav"),
             (self.reload_button, "Reload", "nav"),
+            (self.stop_button, "Stop loading", "nav"),
+            (self.clear_cache_button, "Clear cache", "nav"),
             (self.zoom_out_button, "Zoom out", "zoom"),
             (self.zoom_in_button, "Zoom in", "zoom"),
             (self.memory_button, "Save this tile", "memory"),
@@ -259,16 +264,50 @@ class WebTile(QFrame):
         self.browser_url_edit.setMinimumWidth(90)
         self.browser_url_edit.returnPressed.connect(self.load_from_browser_input)
 
-        header_layout.addWidget(self.back_button)
-        header_layout.addWidget(self.forward_button)
-        header_layout.addWidget(self.reload_button)
-        header_layout.addWidget(self.zoom_out_button)
-        header_layout.addWidget(self.zoom_in_button)
+        # Colonne gauche : nav
+        left_col = QWidget()
+        left_col_layout = QVBoxLayout(left_col)
+        left_col_layout.setContentsMargins(0, 0, 0, 0)
+        left_col_layout.setSpacing(2)
+        left_col_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        nav_row1 = QHBoxLayout()
+        nav_row1.setSpacing(2)
+        nav_row1.addWidget(self.back_button)
+        nav_row1.addWidget(self.forward_button)
+        nav_row1.addStretch()
+        nav_row2 = QHBoxLayout()
+        nav_row2.setSpacing(2)
+        nav_row2.addWidget(self.reload_button)
+        nav_row2.addWidget(self.stop_button)
+        nav_row2.addStretch()
+        left_col_layout.addLayout(nav_row1)
+        left_col_layout.addLayout(nav_row2)
+
+        # Colonne droite : actions
+        right_col = QWidget()
+        right_col_layout = QVBoxLayout(right_col)
+        right_col_layout.setContentsMargins(0, 0, 0, 0)
+        right_col_layout.setSpacing(2)
+        right_col_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        act_row1 = QHBoxLayout()
+        act_row1.setSpacing(2)
+        act_row1.addStretch()
+        act_row1.addWidget(self.clear_cache_button)
+        act_row1.addWidget(self.memory_button)
+        act_row1.addWidget(self.close_button)
+        act_row2 = QHBoxLayout()
+        act_row2.setSpacing(2)
+        act_row2.addStretch()
+        act_row2.addWidget(self.zoom_out_button)
+        act_row2.addWidget(self.zoom_in_button)
+        act_row2.addWidget(self.focus_button)
+        act_row2.addWidget(self.split_button)
+        right_col_layout.addLayout(act_row1)
+        right_col_layout.addLayout(act_row2)
+
+        header_layout.addWidget(left_col)
         header_layout.addWidget(self.browser_url_edit, 1)
-        header_layout.addWidget(self.memory_button)
-        header_layout.addWidget(self.focus_button)
-        header_layout.addWidget(self.split_button)
-        header_layout.addWidget(self.close_button)
+        header_layout.addWidget(right_col)
 
         self.error_banner = QLabel("")
         self.error_banner.setObjectName("ErrorBanner")
@@ -291,6 +330,10 @@ class WebTile(QFrame):
         self.focus_button.clicked.connect(self._on_focus_button_clicked)
         self.split_button.clicked.connect(self._on_split_button_clicked)
         self.close_button.clicked.connect(self.reset_to_empty)
+        self.stop_button.clicked.connect(lambda: self._web_view.stop() if self._web_view else None)
+        self.clear_cache_button.clicked.connect(self._clear_cache)
+        self.stop_button.clicked.connect(lambda: self._web_view.stop() if self._web_view else None)
+        self.clear_cache_button.clicked.connect(self._clear_cache)
 
         self._page.permissionRequested.connect(lambda p: p.grant())
         self._page.loadStarted.connect(self._on_load_started)
@@ -326,6 +369,18 @@ class WebTile(QFrame):
 
     def open_url_text(self, raw_text: str) -> None:
         self._navigate_from_text(raw_text)
+
+    def _clear_cache(self) -> None:
+        if self._page is not None:
+            self.profile.clearHttpCache()
+            self.reload_current()
+            print(f"Cache effacé pour tuile {self.tile_id}")
+
+    def _clear_cache(self) -> None:
+        if self._page is not None:
+            self.profile.clearHttpCache()
+            self.reload_current()
+            print(f"Cache effacé pour tuile {self.tile_id}")
 
     def reload_current(self) -> None:
         if self._web_view is not None and self._state.has_content:

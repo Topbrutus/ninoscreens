@@ -54,4 +54,5 @@ def serialize_app_state(app_state: AppState) -> dict[str, Any]:
         "active_view": app_state.active_view,
         "window": window_payload,
         "tiles": tiles_payload,
+        "split_pairs": app_state.split_pairs,
     }

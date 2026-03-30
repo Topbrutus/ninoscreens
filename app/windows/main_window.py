@@ -63,6 +63,7 @@ class MainWindow(QMainWindow):
         self._refresh_top_state()
         self._autosave_timer = QTimer(self)
         self._autosave_timer.timeout.connect(self._save_session)
+        self._session_ready = False
         # Le timer démarre seulement quand toutes les tuiles sont chargées
 
     def _build_ui(self) -> None:
@@ -327,9 +328,14 @@ class MainWindow(QMainWindow):
             if not self._restore_saved_split_for_tile(self._focused_tile_id):
                 self.focus_view.show_split_panel()
         elif self._split_tile_id is not None:
+            # Nettoyer les paires
+            if self._focused_tile_id in self._split_pairs:
+                del self._split_pairs[self._focused_tile_id]
+            if self._split_tile_id in self._split_pairs:
+                del self._split_pairs[self._split_tile_id]
             self._return_split_tile_to_grid(self._split_tile_id)
             self._split_tile_id = None
-            self.focus_view.show_split_panel()
+            self.focus_view.hide_split_panel()
         else:
             self.focus_view.hide_split_panel()
 
@@ -464,8 +470,17 @@ class MainWindow(QMainWindow):
     def _clear_split_tile(self) -> None:
         if self._split_tile_id is None:
             return
+        # Nettoyer les paires de split
+        focused = self._focused_tile_id
+        split = self._split_tile_id
+        if focused is not None and focused in self._split_pairs:
+            del self._split_pairs[focused]
+        if split is not None and split in self._split_pairs:
+            del self._split_pairs[split]
         self._return_split_tile_to_grid(self._split_tile_id)
         self._split_tile_id = None
+        self._sync_focus_flags()
+        self._refresh_top_state()
 
     def _show_active_workspace(self) -> None:
         self.main_stack.setCurrentWidget(self.page_stack)
@@ -534,6 +549,12 @@ class MainWindow(QMainWindow):
 
     def _on_split_visibility_changed(self, visible: bool) -> None:
         if not visible:
+            # Nettoyer les paires aussi
+            if self._split_tile_id is not None:
+                if self._focused_tile_id in self._split_pairs:
+                    del self._split_pairs[self._focused_tile_id]
+                if self._split_tile_id in self._split_pairs:
+                    del self._split_pairs[self._split_tile_id]
             self._split_tile_id = None
         self._sync_focus_flags()
         self._refresh_top_state()
@@ -585,8 +606,13 @@ class MainWindow(QMainWindow):
                 if t.get("tile_id") is not None and t.get("current_url")
             ]
             print(f"Session restaurée: {len(to_restore)} URLs")
+            split_pairs = payload.get("split_pairs", {})
+            self._split_pairs = {int(k): int(v) for k, v in split_pairs.items()}
+            split_pairs = payload.get("split_pairs", {})
+            self._split_pairs = {int(k): int(v) for k, v in split_pairs.items()}
             def _load_next(index=0):
                 if index >= len(to_restore):
+                    self._session_ready = True
                     self._autosave_timer.start(30000)
                     print("Autosave activé — toutes les tuiles chargées.")
                     return
@@ -604,6 +630,7 @@ class MainWindow(QMainWindow):
             from app.session_store import save_session_payload, serialize_app_state
             self.app_state.tiles = [_r(tile.state) for _, tile in sorted(self.tiles.items())]
             self.app_state.focused_tile_id = self._focused_tile_id
+            self.app_state.split_pairs = self._split_pairs
             save_session_payload(serialize_app_state(self.app_state))
             print('Session sauvegardée!')
         except Exception as e:
@@ -615,7 +642,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._autosave_timer.stop()
-        self._save_session()
+        if self._session_ready:
+            self._save_session()
+        else:
+            print("Fermeture avant chargement complet — session non sauvegardée.")
         for tile in self.tiles.values():
             tile.setParent(None)
             tile.deleteLater()
