@@ -52,7 +52,7 @@ class MainWindow(QMainWindow):
         self.tiles: dict[int, WebTile] = {}
         self.page_grids: list[DashboardGrid] = []
         self._focused_tile_id: int | None = None
-        self._split_tile_id: int | None = None
+        self._split_tile_id: dict[int, int] = {}
         self._split_pairs: dict[int, int] = {}
         self._last_selected_tile_id: int = 0
 
@@ -208,6 +208,10 @@ class MainWindow(QMainWindow):
             self._show_active_workspace()
 
     def show_tile_page(self, page_index: int) -> None:
+        # Si split actif, détacher le split avant de changer de page
+        if self._focused_tile_id is not None and self._focused_tile_id in self._split_tile_id:
+            self._detach_active_split()
+            self.focus_view.hide_split_panel()
         self.app_state.current_page_index = max(0, min(PAGE_COUNT - 1, page_index))
         self.app_state.active_view = "tiles"
         if self._focused_tile_id is None:
@@ -310,7 +314,7 @@ class MainWindow(QMainWindow):
             self.exit_focus_mode()
             return
 
-        keep_split = self.focus_view.is_split_panel_visible() or (tile_id in self._split_pairs)
+        keep_split = self.focus_view.is_split_panel_visible() or (tile_id in self._split_tile_id)
         self._show_page_for_tile(tile_id)
         self._refresh_top_state()
         QTimer.singleShot(
@@ -327,14 +331,15 @@ class MainWindow(QMainWindow):
         if not self.focus_view.is_split_panel_visible():
             if not self._restore_saved_split_for_tile(self._focused_tile_id):
                 self.focus_view.show_split_panel()
-        elif self._split_tile_id is not None:
+        elif self._focused_tile_id is not None and self._focused_tile_id in self._split_tile_id:
+            current_split = self._split_tile_id[self._focused_tile_id]
             # Nettoyer les paires
             if self._focused_tile_id in self._split_pairs:
                 del self._split_pairs[self._focused_tile_id]
-            if self._split_tile_id in self._split_pairs:
-                del self._split_pairs[self._split_tile_id]
-            self._return_split_tile_to_grid(self._split_tile_id)
-            self._split_tile_id = None
+            if current_split in self._split_pairs:
+                del self._split_pairs[current_split]
+            self._return_split_tile_to_grid(current_split)
+            del self._split_tile_id[self._focused_tile_id]
             self.focus_view.hide_split_panel()
         else:
             self.focus_view.hide_split_panel()
@@ -355,14 +360,14 @@ class MainWindow(QMainWindow):
                 if show_split_panel:
                     self.focus_view.show_split_panel()
                 else:
-                    self._clear_split_tile()
+                    self._detach_active_split()
                     self.focus_view.hide_split_panel()
             self._sync_focus_flags()
             self._refresh_top_state()
             return
 
         if self._focused_tile_id is not None:
-            self._clear_split_tile()
+            self._detach_active_split()
             self._return_focus_tile_to_grid(self._focused_tile_id)
 
         self._show_page_for_tile(tile_id)
@@ -394,14 +399,15 @@ class MainWindow(QMainWindow):
             return
         if tile_id not in self.tiles or tile_id == self._focused_tile_id:
             return
-        if self._split_tile_id == tile_id:
+        current_split = self._split_tile_id.get(self._focused_tile_id)
+        if current_split == tile_id:
             return
 
-        if self._split_tile_id is not None:
-            self._return_split_tile_to_grid(self._split_tile_id)
+        if current_split is not None:
+            self._return_split_tile_to_grid(current_split)
 
         self._detach_tile_from_grid(tile_id)
-        self._split_tile_id = tile_id
+        self._split_tile_id[self._focused_tile_id] = tile_id
         self._split_pairs[self._focused_tile_id] = tile_id
         self._split_pairs[tile_id] = self._focused_tile_id
         self.focus_view.set_split_tile_widget(self.tiles[tile_id])
@@ -409,18 +415,13 @@ class MainWindow(QMainWindow):
         self._refresh_top_state()
 
     def _restore_saved_split_for_tile(self, tile_id: int) -> bool:
-        split_tile_id = self._split_pairs.get(tile_id)
+        split_tile_id = self._split_tile_id.get(tile_id)
         if split_tile_id is None:
             return False
         if split_tile_id == tile_id or split_tile_id not in self.tiles:
             return False
 
-        if self._split_tile_id is not None and self._split_tile_id != split_tile_id:
-            self._return_split_tile_to_grid(self._split_tile_id)
-            self._split_tile_id = None
-
         self._detach_tile_from_grid(split_tile_id)
-        self._split_tile_id = split_tile_id
         self.focus_view.set_split_tile_widget(self.tiles[split_tile_id])
         return True
 
@@ -428,7 +429,7 @@ class MainWindow(QMainWindow):
         if self._focused_tile_id is None:
             return
 
-        self._clear_split_tile()
+        self._detach_active_split()
         self._return_focus_tile_to_grid(self._focused_tile_id)
         self.focus_view.hide_split_panel()
         self._focused_tile_id = None
@@ -468,19 +469,28 @@ class MainWindow(QMainWindow):
         )
 
     def _clear_split_tile(self) -> None:
-        if self._split_tile_id is None:
+        if self._focused_tile_id is None:
+            return
+        current_split = self._split_tile_id.get(self._focused_tile_id)
+        if current_split is None:
             return
         # Nettoyer les paires de split
-        focused = self._focused_tile_id
-        split = self._split_tile_id
-        if focused is not None and focused in self._split_pairs:
-            del self._split_pairs[focused]
-        if split is not None and split in self._split_pairs:
-            del self._split_pairs[split]
-        self._return_split_tile_to_grid(self._split_tile_id)
-        self._split_tile_id = None
+        if self._focused_tile_id in self._split_pairs:
+            del self._split_pairs[self._focused_tile_id]
+        if current_split in self._split_pairs:
+            del self._split_pairs[current_split]
+        self._return_split_tile_to_grid(current_split)
+        del self._split_tile_id[self._focused_tile_id]
         self._sync_focus_flags()
         self._refresh_top_state()
+
+    def _detach_active_split(self) -> None:
+        if self._focused_tile_id is None:
+            return
+        current_split = self._split_tile_id.get(self._focused_tile_id)
+        if current_split is None:
+            return
+        self._return_split_tile_to_grid(current_split)
 
     def _show_active_workspace(self) -> None:
         self.main_stack.setCurrentWidget(self.page_stack)
@@ -523,9 +533,10 @@ class MainWindow(QMainWindow):
         hot = sum(1 for tile in self.app_state.tiles if tile.memory_mb >= 700)
 
         if self._focused_tile_id is not None:
-            if self._split_tile_id is not None:
+            current_split = self._split_tile_id.get(self._focused_tile_id)
+            if current_split is not None:
                 self.mode_label.setText(
-                    f"Split - tile {self._focused_tile_id + 1} + tile {self._split_tile_id + 1}"
+                    f"Split - tile {self._focused_tile_id + 1} + tile {current_split + 1}"
                 )
             elif self.focus_view.is_split_panel_visible():
                 self.mode_label.setText(f"Split - tile {self._focused_tile_id + 1}")
@@ -548,14 +559,14 @@ class MainWindow(QMainWindow):
         self.focus_exit_button.setEnabled(self._focused_tile_id is not None)
 
     def _on_split_visibility_changed(self, visible: bool) -> None:
-        if not visible:
-            # Nettoyer les paires aussi
-            if self._split_tile_id is not None:
+        if not visible and self._focused_tile_id is not None:
+            current_split = self._split_tile_id.get(self._focused_tile_id)
+            if current_split is not None:
                 if self._focused_tile_id in self._split_pairs:
                     del self._split_pairs[self._focused_tile_id]
-                if self._split_tile_id in self._split_pairs:
-                    del self._split_pairs[self._split_tile_id]
-            self._split_tile_id = None
+                if current_split in self._split_pairs:
+                    del self._split_pairs[current_split]
+            self._split_tile_id.pop(self._focused_tile_id, None)
         self._sync_focus_flags()
         self._refresh_top_state()
 
@@ -608,8 +619,8 @@ class MainWindow(QMainWindow):
             print(f"Session restaurée: {len(to_restore)} URLs")
             split_pairs = payload.get("split_pairs", {})
             self._split_pairs = {int(k): int(v) for k, v in split_pairs.items()}
-            split_pairs = payload.get("split_pairs", {})
-            self._split_pairs = {int(k): int(v) for k, v in split_pairs.items()}
+            split_tile_ids = payload.get("split_tile_ids", {})
+            self._split_tile_id = {int(k): int(v) for k, v in split_tile_ids.items()}
             def _load_next(index=0):
                 if index >= len(to_restore):
                     self._session_ready = True
@@ -631,7 +642,9 @@ class MainWindow(QMainWindow):
             self.app_state.tiles = [_r(tile.state) for _, tile in sorted(self.tiles.items())]
             self.app_state.focused_tile_id = self._focused_tile_id
             self.app_state.split_pairs = self._split_pairs
-            save_session_payload(serialize_app_state(self.app_state))
+            payload = serialize_app_state(self.app_state)
+            payload["split_tile_ids"] = {str(k): v for k, v in self._split_tile_id.items()}
+            save_session_payload(payload)
             print('Session sauvegardée!')
         except Exception as e:
             print(f'Erreur save_session: {e}')
