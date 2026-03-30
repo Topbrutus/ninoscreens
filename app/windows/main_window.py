@@ -63,7 +63,7 @@ class MainWindow(QMainWindow):
         self._refresh_top_state()
         self._autosave_timer = QTimer(self)
         self._autosave_timer.timeout.connect(self._save_session)
-        self._autosave_timer.start(30000)
+        # Le timer démarre seulement quand toutes les tuiles sont chargées
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -587,6 +587,8 @@ class MainWindow(QMainWindow):
             print(f"Session restaurée: {len(to_restore)} URLs")
             def _load_next(index=0):
                 if index >= len(to_restore):
+                    self._autosave_timer.start(30000)
+                    print("Autosave activé — toutes les tuiles chargées.")
                     return
                 tid, url, zoom = to_restore[index]
                 if tid in self.tiles:

@@ -292,6 +292,7 @@ class WebTile(QFrame):
         self.split_button.clicked.connect(self._on_split_button_clicked)
         self.close_button.clicked.connect(self.reset_to_empty)
 
+        self._page.permissionRequested.connect(lambda p: p.grant())
         self._page.loadStarted.connect(self._on_load_started)
         self._page.loadFinished.connect(self._on_load_finished)
         self._page.loadProgress.connect(self._on_load_progress)

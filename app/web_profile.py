@@ -28,5 +28,19 @@ def build_shared_profile(parent) -> QWebEngineProfile:
     settings.setAttribute(QWebEngineSettings.WebAttribute.FocusOnNavigationEnabled, True)
     settings.setAttribute(QWebEngineSettings.WebAttribute.PdfViewerEnabled, True)
     settings.setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
+    settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanAccessClipboard, True)
+    settings.setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, True)
+    settings.setAttribute(QWebEngineSettings.WebAttribute.AllowWindowActivationFromJavaScript, True)
+
+    profile.downloadRequested.connect(_handle_download)
 
     return profile
+
+
+def _handle_download(download) -> None:
+    import os
+    from PySide6.QtWebEngineCore import QWebEngineDownloadRequest
+    download_dir = os.path.expanduser("~/Téléchargements")
+    os.makedirs(download_dir, exist_ok=True)
+    download.setDownloadDirectory(download_dir)
+    download.accept()
