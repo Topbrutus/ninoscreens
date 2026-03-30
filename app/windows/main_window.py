@@ -585,18 +585,13 @@ class MainWindow(QMainWindow):
                 if t.get("tile_id") is not None and t.get("current_url")
             ]
             print(f"Session restaurée: {len(to_restore)} URLs")
-            # Charger seulement page 1 (tuiles 0-11) au démarrage
-            first_page = [t for t in to_restore if t[0] < 12]
-            later = [t for t in to_restore if t[0] >= 12]
-            self._deferred_restore = later
-
-            def _load_next(index=0, batch=first_page):
-                if index >= len(batch):
+            def _load_next(index=0):
+                if index >= len(to_restore):
                     return
-                tid, url, zoom = batch[index]
+                tid, url, zoom = to_restore[index]
                 if tid in self.tiles:
                     self.tiles[tid].restore_from_session(current_url=url, zoom_factor=zoom)
-                QTimer.singleShot(3000, lambda i=index+1: _load_next(i, batch))
+                QTimer.singleShot(3000, lambda i=index+1: _load_next(i))
             QTimer.singleShot(1000, _load_next)
         except Exception as e:
             print(f"Erreur restore: {e}")

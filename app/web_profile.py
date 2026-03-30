@@ -18,8 +18,18 @@ def build_shared_profile(parent) -> QWebEngineProfile:
     """
     root = web_profile_root()
     profile = QWebEngineProfile(APP_NAME, parent)
-    profile.setPersistentStoragePath(str(root / "storage"))
-    profile.setCachePath(str(root / "cache"))
+    import os
+    chrome_default = os.path.expanduser("~/.config/google-chrome/Default")
+    if os.path.exists(chrome_default):
+        profile.setPersistentStoragePath(chrome_default)
+        profile.setCachePath(os.path.expanduser("~/.config/google-chrome/Default/Cache"))
+    else:
+        profile.setPersistentStoragePath(str(root / "storage"))
+        profile.setCachePath(str(root / "cache"))
+
+    profile.setPersistentCookiesPolicy(
+        QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies
+    )
 
     settings = profile.settings()
     settings.setAttribute(QWebEngineSettings.WebAttribute.FullScreenSupportEnabled, True)
@@ -28,5 +38,9 @@ def build_shared_profile(parent) -> QWebEngineProfile:
     settings.setAttribute(QWebEngineSettings.WebAttribute.FocusOnNavigationEnabled, True)
     settings.setAttribute(QWebEngineSettings.WebAttribute.PdfViewerEnabled, True)
     settings.setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
+
+    profile.setHttpUserAgent(
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+    )
 
     return profile

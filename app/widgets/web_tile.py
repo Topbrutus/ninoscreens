@@ -433,7 +433,15 @@ class WebTile(QFrame):
         self._state.status = TileVisualStatus.LOADING
         self._emit_state()
 
+    def _sync_zoom_from_view(self) -> None:
+        if self._web_view is not None:
+            actual = round(self._web_view.zoomFactor(), 2)
+            if actual != self._state.zoom_factor:
+                self._state.zoom_factor = actual
+                self._emit_state()
+
     def _on_load_finished(self, ok: bool) -> None:
+        QTimer.singleShot(300, self._sync_zoom_from_view)
         self._state.is_loading = False
         if ok:
             self._state.status = TileVisualStatus.READY
