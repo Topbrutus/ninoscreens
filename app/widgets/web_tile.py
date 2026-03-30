@@ -237,6 +237,7 @@ class WebTile(QFrame):
         self.memory_button = QPushButton("💾")
         self.focus_button = QPushButton("⛶")
         self.split_button = QPushButton("⇆")
+        self.external_button = QPushButton("🌐")
         self.close_button = QPushButton("✕")
 
         for button, tooltip, role in (
@@ -248,6 +249,7 @@ class WebTile(QFrame):
             (self.memory_button, "Save this tile", "memory"),
             (self.focus_button, "Open this tile in focus mode", "accent"),
             (self.split_button, "Split this focused page", "accent"),
+            (self.external_button, "Ouvrir dans Chrome", "nav"),
             (self.close_button, "Close this tile", "danger"),
         ):
             self._configure_toolbar_button(button, tooltip, role)
@@ -268,6 +270,7 @@ class WebTile(QFrame):
         header_layout.addWidget(self.memory_button)
         header_layout.addWidget(self.focus_button)
         header_layout.addWidget(self.split_button)
+        header_layout.addWidget(self.external_button)
         header_layout.addWidget(self.close_button)
 
         self.error_banner = QLabel("")
@@ -291,6 +294,7 @@ class WebTile(QFrame):
         self.focus_button.clicked.connect(self._on_focus_button_clicked)
         self.split_button.clicked.connect(self._on_split_button_clicked)
         self.close_button.clicked.connect(self.reset_to_empty)
+        self.external_button.clicked.connect(self._open_in_external_browser)
 
         self._page.permissionRequested.connect(lambda p: p.grant())
         self._page.loadStarted.connect(self._on_load_started)
@@ -326,6 +330,17 @@ class WebTile(QFrame):
 
     def open_url_text(self, raw_text: str) -> None:
         self._navigate_from_text(raw_text)
+
+    def _open_in_external_browser(self) -> None:
+        import subprocess
+        url = self._state.current_url or "https://google.com"
+        try:
+            subprocess.Popen(["google-chrome", "--new-window", url])
+        except FileNotFoundError:
+            try:
+                subprocess.Popen(["chromium", "--new-window", url])
+            except FileNotFoundError:
+                subprocess.Popen(["xdg-open", url])
 
     def reload_current(self) -> None:
         if self._web_view is not None and self._state.has_content:
