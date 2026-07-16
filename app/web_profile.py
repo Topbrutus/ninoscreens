@@ -14,7 +14,8 @@ def _install_clipboard_write_patch(profile: QWebEngineProfile) -> None:
     """
     Patch navigator.clipboard.writeText in web tiles so user-initiated copy
     actions keep working even when Chromium rejects the native async clipboard
-    path. The fallback only writes text and does not expose read access.
+    path. The fallback only writes text, does not expose read access, and does
+    not grant a global clipboard permission.
     """
     script = QWebEngineScript()
     script.setName("nino-clipboard-write-fallback")
@@ -71,8 +72,32 @@ def _install_clipboard_write_patch(profile: QWebEngineProfile) -> None:
             }
           };
 
+          const extractPlainTextFromItems = async (items) => {
+            const itemList = Array.from(items || []);
+            for (const item of itemList) {
+              if (!item || !Array.isArray(item.types) || typeof item.getType !== "function") {
+                continue;
+              }
+              if (!item.types.includes("text/plain")) {
+                continue;
+              }
+              try {
+                const blob = await item.getType("text/plain");
+                if (blob && typeof blob.text === "function") {
+                  return await blob.text();
+                }
+              } catch (_error) {
+                continue;
+              }
+            }
+            return "";
+          };
+
           const originalWriteText = typeof clipboard.writeText === "function"
             ? clipboard.writeText.bind(clipboard)
+            : null;
+          const originalWrite = typeof clipboard.write === "function"
+            ? clipboard.write.bind(clipboard)
             : null;
           const patchedWriteText = async (text) => {
             if (originalWriteText) {
@@ -89,6 +114,25 @@ def _install_clipboard_write_patch(profile: QWebEngineProfile) -> None:
             return fallbackWriteText(text);
           };
 
+          const patchedWrite = async (items) => {
+            if (originalWrite) {
+              try {
+                return await originalWrite(items);
+              } catch (error) {
+                const name = error && error.name ? String(error.name) : "";
+                if (name !== "NotAllowedError" && name !== "SecurityError") {
+                  throw error;
+                }
+              }
+            }
+
+            const text = await extractPlainTextFromItems(items);
+            if (!text) {
+              throw makeNotAllowedError("Clipboard copy unavailable.");
+            }
+            return fallbackWriteText(text);
+          };
+
           try {
             Object.defineProperty(clipboard, "writeText", {
               configurable: true,
@@ -98,6 +142,19 @@ def _install_clipboard_write_patch(profile: QWebEngineProfile) -> None:
             });
           } catch (_error) {
             clipboard.writeText = patchedWriteText;
+          }
+
+          if (originalWrite) {
+            try {
+              Object.defineProperty(clipboard, "write", {
+                configurable: true,
+                enumerable: true,
+                writable: true,
+                value: patchedWrite,
+              });
+            } catch (_error) {
+              clipboard.write = patchedWrite;
+            }
           }
 
           clipboard.__ninoWriteTextPatched = true;
@@ -133,5 +190,6 @@ def build_shared_profile(parent) -> QWebEngineProfile:
     settings.setAttribute(QWebEngineSettings.WebAttribute.FocusOnNavigationEnabled, True)
     settings.setAttribute(QWebEngineSettings.WebAttribute.PdfViewerEnabled, True)
     settings.setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
+    settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanAccessClipboard, False)
 
     return profile
