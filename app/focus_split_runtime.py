@@ -195,7 +195,9 @@ class FocusSplit:
             button.setProperty("role", "accent")
             button.setFixedHeight(TOOLBAR_BUTTON_SIZE.height())
             button.setMinimumWidth(58)
-            button.clicked.connect(lambda _checked=False, tid=tile.tile_id: self.toggle_split(tid))
+            button.clicked.connect(
+                lambda _checked=False, tid=tile.tile_id: self.window.toggle_permanent_split_for_focused_tile(tid)
+            )
 
             close_button = getattr(tile, "close_button", None)
             insert_index = header_layout.indexOf(close_button)
@@ -248,7 +250,13 @@ class FocusSplit:
             )
             button.setVisible(visible)
 
-            active = self.primary_tile_id == tile.tile_id and tile.tile_id in self.states
+            active = (
+                self.window._focused_tile_id == tile.tile_id
+                and (
+                    self.window.focus_view.is_split_panel_visible()
+                    or tile.tile_id in self.window._split_pairs
+                )
+            )
             button.setProperty("role", "nav" if active else "accent")
             button.setToolTip("Fermer complètement le split" if active else "Ouvrir un split")
             _polish(button)
@@ -301,7 +309,7 @@ class FocusSplit:
     def return_to_selector(self) -> None:
         if self.primary_tile_id is None:
             return
-        self.states[self.primary_tile_id = None
+        self.states[self.primary_tile_id] = None
         self.show_selector(self.primary_tile_id)
         self.refresh_split_buttons()
 

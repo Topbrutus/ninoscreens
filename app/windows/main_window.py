@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from pathlib import Path
 import json
+import os
+from pathlib import Path
 import subprocess
+import sys
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
@@ -188,7 +190,7 @@ class MainWindow(QMainWindow):
             slot_index = tile_id % TILES_PER_PAGE
             self.page_grids[page_index].place_tile(tile, slot_index)
 
-    def on_tile_state_changed(self, state_object: object) -> None:
+    def _handle_tile_state_changed(self, state_object: object) -> None:
         if not isinstance(state_object, TileState):
             return
 
@@ -228,9 +230,26 @@ class MainWindow(QMainWindow):
             self._show_active_workspace()
         self._refresh_top_state()
 
+    def _resolve_run_backend(self) -> tuple[Path, Path, str] | None:
+        project_root_raw = os.environ.get("NINO_RUN_PROJECT_ROOT", "").strip()
+        if not project_root_raw:
+            self.run_workspace.append_system_message(
+                "Backend RUN non configure. Definir NINO_RUN_PROJECT_ROOT pour activer l'envoi.",
+                tone="blocked",
+            )
+            return None
+
+        project_root = Path(project_root_raw)
+        cli_path_raw = os.environ.get("NINO_RUN_CLI_PATH", "").strip()
+        cli_path = Path(cli_path_raw) if cli_path_raw else project_root / "src" / "run_cli.py"
+        python_cmd = os.environ.get("NINO_RUN_PYTHON", "").strip() or sys.executable
+        return project_root, cli_path, python_cmd
+
     def on_run_prompt_submitted(self, text: str) -> None:
-        project_root = Path("/home/gaby/MonDeuxiemeProjet")
-        cli_path = project_root / "src" / "run_cli.py"
+        backend = self._resolve_run_backend()
+        if backend is None:
+            return
+        project_root, cli_path, python_cmd = backend
 
         if not cli_path.exists():
             self.run_workspace.append_system_message(
@@ -241,7 +260,7 @@ class MainWindow(QMainWindow):
 
         try:
             completed = subprocess.run(
-                ["python3", str(cli_path), "dispatch", "monprogramme", text],
+                [python_cmd, str(cli_path), "dispatch", "monprogramme", text],
                 cwd=str(project_root),
                 capture_output=True,
                 text=True,
@@ -329,15 +348,32 @@ class MainWindow(QMainWindow):
         if self._focused_tile_id is None or tile_id != self._focused_tile_id:
             return
 
-        if not self.focus_view.is_split_panel_visible():
-            if not self._restore_saved_split_for_tile(self._focused_tile_id):
-                self.focus_view.show_split_panel()
-        elif self._split_tile_id is not None:
-            self._return_split_tile_to_grid(self._split_tile_id)
-            self._split_tile_id = None
-            self.focus_view.show_split_panel()
-        else:
+        partner_tile_id = self._paired_tile_id_for(self._focused_tile_id)
+        if partner_tile_id is None:
+            return
+
+        if self.focus_view.is_split_panel_visible():
             self.focus_view.hide_split_panel()
+            self.app_state.split_panel_visible = False
+        else:
+            if not self._restore_saved_split_for_tile(self._focused_tile_id):
+                self._deactivate_split_for_primary(self._focused_tile_id)
+                return
+            self.app_state.split_panel_visible = True
+
+        self._sync_focus_flags()
+        self._refresh_top_state()
+
+    def toggle_permanent_split_for_focused_tile(self, tile_id: int) -> None:
+        if self._focused_tile_id is None or tile_id != self._focused_tile_id:
+            return
+
+        if self._paired_tile_id_for(tile_id) is not None or self.focus_view.is_split_panel_visible():
+            self._deactivate_split_for_primary(tile_id)
+        else:
+            self._clear_split_tile()
+            self.focus_view.show_split_panel()
+            self.app_state.split_panel_visible = True
 
         self._sync_focus_flags()
         self._refresh_top_state()
@@ -411,10 +447,8 @@ class MainWindow(QMainWindow):
         self._refresh_top_state()
 
     def _restore_saved_split_for_tile(self, tile_id: int) -> bool:
-        split_tile_id = self._split_pairs.get(tile_id)
+        split_tile_id = self._paired_tile_id_for(tile_id)
         if split_tile_id is None:
-            return False
-        if split_tile_id == tile_id or split_tile_id not in self.tiles:
             return False
 
         if self._split_tile_id is not None and self._split_tile_id != split_tile_id:
@@ -476,6 +510,53 @@ class MainWindow(QMainWindow):
         self._return_split_tile_to_grid(self._split_tile_id)
         self._split_tile_id = None
 
+    def _paired_tile_id_for(self, tile_id: int | None) -> int | None:
+        if tile_id is None:
+            return None
+        partner_tile_id = self._split_pairs.get(tile_id)
+        if partner_tile_id is None or partner_tile_id == tile_id:
+            return None
+        if partner_tile_id not in self.tiles:
+            return None
+        return partner_tile_id
+
+    def _forget_split_pair(self, primary_tile_id: int) -> None:
+        partner_tile_id = self._split_pairs.pop(primary_tile_id, None)
+        if partner_tile_id is None:
+            return
+        if self._split_pairs.get(partner_tile_id) == primary_tile_id:
+            self._split_pairs.pop(partner_tile_id, None)
+
+    def _deactivate_split_for_primary(self, primary_tile_id: int) -> None:
+        partner_tile_id = self._paired_tile_id_for(primary_tile_id)
+        if self._split_tile_id is not None:
+            self._return_split_tile_to_grid(self._split_tile_id)
+            self._split_tile_id = None
+        elif partner_tile_id is not None:
+            self._return_split_tile_to_grid(partner_tile_id)
+        self._forget_split_pair(primary_tile_id)
+        self.focus_view.hide_split_panel()
+        self.app_state.split_panel_visible = False
+
+    def _clear_split_if_tile_became_empty(self, tile_state: TileState) -> None:
+        if tile_state.has_content:
+            return
+
+        tile_id = tile_state.tile_id
+        if tile_id == self._focused_tile_id:
+            self._deactivate_split_for_primary(tile_id)
+            return
+
+        primary_tile_id = self._split_pairs.get(tile_id)
+        if primary_tile_id is None:
+            return
+
+        if primary_tile_id == self._focused_tile_id:
+            self._deactivate_split_for_primary(primary_tile_id)
+            return
+
+        self._forget_split_pair(primary_tile_id)
+
     def _show_active_workspace(self) -> None:
         self.main_stack.setCurrentWidget(self.page_stack)
         if self.app_state.active_view == "run":
@@ -489,10 +570,14 @@ class MainWindow(QMainWindow):
 
         for tile_id, tile in self.tiles.items():
             is_active = tile_id == self._focused_tile_id
+            has_permanent_split = self._paired_tile_id_for(tile_id) is not None
             if tile.state.is_focused != is_active:
                 tile.set_focus_flag(is_active)
             tile.set_toolbar_focus_mode(in_focus_view and is_active)
-            tile.set_split_button_active(in_focus_view and is_active and split_visible)
+            tile.set_split_button_active(
+                in_focus_view and is_active and has_permanent_split,
+                panel_visible=in_focus_view and is_active and has_permanent_split and split_visible,
+            )
 
         self.app_state.tiles = [
             replace(tile.state) for _, tile in sorted(self.tiles.items())
@@ -542,7 +627,8 @@ class MainWindow(QMainWindow):
         self.focus_exit_button.setEnabled(self._focused_tile_id is not None)
 
     def _on_split_visibility_changed(self, visible: bool) -> None:
-        if not visible:
+        self.app_state.split_panel_visible = visible and self._focused_tile_id is not None
+        if not visible and self._paired_tile_id_for(self._focused_tile_id) is None:
             self._split_tile_id = None
         self._sync_focus_flags()
         self._refresh_top_state()
@@ -556,7 +642,10 @@ class MainWindow(QMainWindow):
             self.fullscreen_button.setText("Quitter plein écran")
         self.app_state.is_fullscreen = self.isFullScreen()
 
-    def on_tile_state_changed(self, _state: object) -> None:
+    def on_tile_state_changed(self, state_object: object) -> None:
+        self._handle_tile_state_changed(state_object)
+        if isinstance(state_object, TileState):
+            self._clear_split_if_tile_became_empty(state_object)
         self._sync_focus_flags()
         self._refresh_top_state()
 

@@ -78,6 +78,7 @@ class WebTile(QFrame):
         self._page: TileWebPage | None = None
         self._toolbar_focus_mode = False
         self._split_button_active = False
+        self._split_panel_visible = False
 
         self.setObjectName("TileFrame")
         self.setProperty("focused", False)
@@ -114,8 +115,9 @@ class WebTile(QFrame):
         self.style().polish(self)
         self._emit_state()
 
-    def set_split_button_active(self, active: bool) -> None:
+    def set_split_button_active(self, active: bool, panel_visible: bool = False) -> None:
         self._split_button_active = active
+        self._split_panel_visible = panel_visible
         if self._browser_container is None:
             return
         self._refresh_split_button_state()
@@ -136,6 +138,7 @@ class WebTile(QFrame):
             self.focus_button.setProperty("role", "accent")
             self.split_button.hide()
             self._split_button_active = False
+            self._split_panel_visible = False
 
         self.focus_button.style().unpolish(self.focus_button)
         self.focus_button.style().polish(self.focus_button)
@@ -146,10 +149,17 @@ class WebTile(QFrame):
         if self._browser_container is None:
             return
         self.split_button.setText("⇆")
-        self.split_button.setToolTip(
-            "Masquer le sélecteur split" if self._split_button_active else "Split this focused page"
-        )
-        self.split_button.setProperty("role", "nav" if self._split_button_active else "accent")
+        if not self._split_button_active:
+            tooltip = "Aucun split permanent actif"
+            role = "nav"
+        elif self._split_panel_visible:
+            tooltip = "Masquer temporairement la page secondaire"
+            role = "accent"
+        else:
+            tooltip = "Restaurer la page secondaire liee"
+            role = "accent"
+        self.split_button.setToolTip(tooltip)
+        self.split_button.setProperty("role", role)
         self.split_button.style().unpolish(self.split_button)
         self.split_button.style().polish(self.split_button)
 
@@ -481,7 +491,9 @@ class WebTile(QFrame):
         self.zoom_in_button.setEnabled(self._state.has_content)
         self.memory_button.setEnabled(self._state.has_content)
         self.focus_button.setEnabled(self._state.has_content)
-        self.split_button.setEnabled(self._state.has_content and self._toolbar_focus_mode)
+        self.split_button.setEnabled(
+            self._state.has_content and self._toolbar_focus_mode and self._split_button_active
+        )
         self.close_button.setEnabled(self._state.has_content)
 
     def _handle_page_fullscreen_request(self, request) -> None:
