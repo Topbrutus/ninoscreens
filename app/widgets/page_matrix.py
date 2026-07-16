@@ -18,7 +18,7 @@ MATRIX_ICON_SIZE = QSize(16, 16)
 
 
 class PageMatrix(QFrame):
-    """Compact 36-slot top matrix with a dedicated RUN control."""
+    """Compact 36-slot top matrix with a dedicated terminal control."""
 
     slot_activated = Signal(int)
     run_activated = Signal()
@@ -58,13 +58,13 @@ class PageMatrix(QFrame):
             grid.addWidget(button, row, column)
             self.slot_buttons[slot_index] = button
 
-        self.run_button = QPushButton("RUN")
-        self.run_button.setMinimumWidth(72)
+        self.run_button = QPushButton("Terminal")
+        self.run_button.setMinimumWidth(86)
         self.run_button.setMinimumHeight(80)
         self.run_button.setProperty("compact", True)
         self.run_button.setProperty("role", "accent")
         self.run_button.setProperty("active", False)
-        self.run_button.setToolTip("Ouvrir la page RUN / Corvo")
+        self.run_button.setToolTip("Ouvrir la page Terminal")
         self.run_button.clicked.connect(lambda: self.run_activated.emit())
 
         root.addWidget(self.grid_host, 1)
