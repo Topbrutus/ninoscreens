@@ -48,6 +48,7 @@ class TileState:
 @dataclass
 class AppState:
     tiles: list[TileState] = field(default_factory=lambda: [TileState(tile_id=i) for i in range(TILE_COUNT)])
+    tile_positions: list[int] = field(default_factory=lambda: list(range(TILE_COUNT)))
     focused_tile_id: Optional[int] = None
     is_fullscreen: bool = False
     window_size: QSize | None = None

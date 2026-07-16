@@ -26,6 +26,7 @@ from app.config import (
     DEFAULT_WINDOW_SIZE,
     MINIMUM_WINDOW_SIZE,
     PAGE_COUNT,
+    SESSION_SAVE_DEBOUNCE_MS,
     RUN_PAGE_INDEX,
     TILE_COUNT,
     TILES_PER_PAGE,
@@ -64,6 +65,12 @@ class MainWindow(QMainWindow):
         self.app_state = AppState(window_size=DEFAULT_WINDOW_SIZE)
         if len(self.app_state.tiles) < TILE_COUNT:
             self.app_state.tiles = [TileState(tile_id=i) for i in range(TILE_COUNT)]
+
+        self._restoring_session = True
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(SESSION_SAVE_DEBOUNCE_MS)
+        self._save_timer.timeout.connect(self._save_session)
 
         self.profile = build_shared_profile(self)
         self.web_media_controller = WebMediaPermissionController(self.profile, self)
@@ -206,6 +213,136 @@ class MainWindow(QMainWindow):
             slot_index = tile_id % TILES_PER_PAGE
             self.page_grids[page_index].place_tile(tile, slot_index)
 
+    def _tile_slot_index(self, tile_id: int) -> int:
+        if 0 <= tile_id < len(self.app_state.tile_positions):
+            try:
+                slot_index = int(self.app_state.tile_positions[tile_id])
+            except (TypeError, ValueError):
+                slot_index = tile_id
+            if 0 <= slot_index < TILE_COUNT:
+                return slot_index
+        return max(0, min(TILE_COUNT - 1, tile_id))
+
+    def _tile_id_for_slot(self, slot_index: int) -> int:
+        slot_index = max(0, min(TILE_COUNT - 1, slot_index))
+        for tile_id, tile_slot in enumerate(self.app_state.tile_positions):
+            try:
+                if int(tile_slot) == slot_index:
+                    return tile_id
+            except (TypeError, ValueError):
+                continue
+        return slot_index
+
+    def _slot_states(self) -> list[TileState]:
+        slot_states: list[TileState] = []
+        for slot_index in range(TILE_COUNT):
+            tile_id = self._tile_id_for_slot(slot_index)
+            tile = self.tiles.get(tile_id)
+            if tile is None:
+                slot_states.append(TileState(tile_id=tile_id))
+            else:
+                slot_states.append(replace(tile.state))
+        return slot_states
+
+    def _slot_split_pairs(self) -> dict[int, int]:
+        slot_pairs: dict[int, int] = {}
+        for primary_tile_id, partner_tile_id in self._split_pairs.items():
+            if primary_tile_id not in self.tiles or partner_tile_id not in self.tiles:
+                continue
+            primary_slot = self._tile_slot_index(primary_tile_id)
+            partner_slot = self._tile_slot_index(partner_tile_id)
+            if primary_slot != partner_slot:
+                slot_pairs[primary_slot] = partner_slot
+        return slot_pairs
+
+    def _tile_positions_from_payload(self, payload: dict[str, object]) -> list[int]:
+        default_positions = list(range(TILE_COUNT))
+
+        raw_positions = payload.get("tile_positions")
+        if raw_positions is None:
+            raw_positions = payload.get("positions")
+
+        if raw_positions is None and isinstance(payload.get("slot_order"), list):
+            slot_order = payload.get("slot_order")
+            assert isinstance(slot_order, list)
+            if len(slot_order) != TILE_COUNT:
+                return default_positions
+
+            positions = [-1] * TILE_COUNT
+            seen_tiles: set[int] = set()
+            for slot_index, raw_tile_id in enumerate(slot_order):
+                try:
+                    tile_id = int(raw_tile_id)
+                except (TypeError, ValueError):
+                    return default_positions
+                if tile_id < 0 or tile_id >= TILE_COUNT or tile_id in seen_tiles:
+                    return default_positions
+                positions[tile_id] = slot_index
+                seen_tiles.add(tile_id)
+            return positions
+
+        if not isinstance(raw_positions, list) or len(raw_positions) != TILE_COUNT:
+            return default_positions
+
+        positions = [-1] * TILE_COUNT
+        seen_slots: set[int] = set()
+        for tile_id, raw_slot in enumerate(raw_positions):
+            try:
+                slot_index = int(raw_slot)
+            except (TypeError, ValueError):
+                return default_positions
+            if slot_index < 0 or slot_index >= TILE_COUNT or slot_index in seen_slots:
+                return default_positions
+            positions[tile_id] = slot_index
+            seen_slots.add(slot_index)
+        return positions
+
+    def _rebuild_tile_layout(self) -> None:
+        main_panel = getattr(self.focus_view, "main_panel", None)
+        split_host = getattr(self.focus_view, "split_tile_host", None)
+
+        for grid in self.page_grids:
+            for tile in self.tiles.values():
+                grid.remove_tile(tile)
+
+        for tile_id, tile in self.tiles.items():
+            parent = tile.parent()
+            if parent is main_panel or parent is split_host:
+                continue
+
+            slot_index = self._tile_slot_index(tile_id)
+            page_index = slot_index // TILES_PER_PAGE
+            slot_in_page = slot_index % TILES_PER_PAGE
+            self.page_grids[page_index].place_tile(tile, slot_in_page)
+
+    def _swap_tile_positions(self, first_tile_id: int, second_tile_id: int) -> None:
+        if first_tile_id == second_tile_id:
+            return
+        if first_tile_id not in self.tiles or second_tile_id not in self.tiles:
+            return
+
+        first_slot = self._tile_slot_index(first_tile_id)
+        second_slot = self._tile_slot_index(second_tile_id)
+        if first_slot == second_slot:
+            return
+
+        self.app_state.tile_positions[first_tile_id] = second_slot
+        self.app_state.tile_positions[second_tile_id] = first_slot
+        self._rebuild_tile_layout()
+        self._sync_focus_flags()
+        self._refresh_top_state()
+        self.schedule_session_save()
+
+    def move_tile_to_slot(self, tile_id: int, slot_index: int) -> None:
+        if tile_id not in self.tiles:
+            return
+        slot_index = max(0, min(TILE_COUNT - 1, slot_index))
+        current_slot = self._tile_slot_index(tile_id)
+        if current_slot == slot_index:
+            return
+        other_tile_id = self._tile_id_for_slot(slot_index)
+        self._swap_tile_positions(tile_id, other_tile_id)
+
     def _handle_tile_state_changed(self, state_object: object) -> None:
         if not isinstance(state_object, TileState):
             return
@@ -214,12 +351,13 @@ class MainWindow(QMainWindow):
             self.app_state.tiles[state_object.tile_id] = state_object
 
         self.focus_view.refresh_slots(self.app_state.tiles, self._focused_tile_id)
-        self.page_matrix.set_split_pairs(self._split_pairs, self.app_state.tiles)
-        self.page_matrix.refresh_all_slots(self.app_state.tiles)
+        slot_states = self._slot_states()
+        self.page_matrix.set_split_pairs(self._slot_split_pairs(), slot_states)
+        self.page_matrix.refresh_all_slots(slot_states)
         self._refresh_top_state()
 
     def _tile_page_index(self, tile_id: int) -> int:
-        return max(0, min(PAGE_COUNT - 1, tile_id // TILES_PER_PAGE))
+        return max(0, min(PAGE_COUNT - 1, self._tile_slot_index(tile_id) // TILES_PER_PAGE))
 
     def _show_page_for_tile(self, tile_id: int) -> None:
         self._last_selected_tile_id = tile_id
@@ -229,6 +367,7 @@ class MainWindow(QMainWindow):
         self.page_stack.setCurrentIndex(self.app_state.current_page_index)
         if self._focused_tile_id is None:
             self._show_active_workspace()
+        self.schedule_session_save()
 
     def show_tile_page(self, page_index: int) -> None:
         self.app_state.current_page_index = max(0, min(PAGE_COUNT - 1, page_index))
@@ -239,6 +378,7 @@ class MainWindow(QMainWindow):
         else:
             self.page_stack.setCurrentIndex(self.app_state.current_page_index)
         self._refresh_top_state()
+        self.schedule_session_save()
 
     def show_terminal_page(self) -> None:
         self.terminal_workspace.activate()
@@ -246,6 +386,7 @@ class MainWindow(QMainWindow):
         if self._focused_tile_id is None:
             self._show_active_workspace()
         self._refresh_top_state()
+        self.schedule_session_save()
 
     def show_run_page(self) -> None:
         self.show_terminal_page()
@@ -359,8 +500,9 @@ class MainWindow(QMainWindow):
             lambda cid=command_id, rp=result_path, nxt=attempt + 1: self._poll_run_result(cid, rp, nxt),
         )
 
-    def activate_memory_slot(self, tile_id: int) -> None:
-        tile_id = max(0, min(TILE_COUNT - 1, tile_id))
+    def activate_memory_slot(self, slot_index: int) -> None:
+        slot_index = max(0, min(TILE_COUNT - 1, slot_index))
+        tile_id = self._tile_id_for_slot(slot_index)
 
         if self._focused_tile_id is not None and tile_id == self._focused_tile_id:
             self._last_selected_tile_id = tile_id
@@ -430,6 +572,7 @@ class MainWindow(QMainWindow):
                     self.focus_view.hide_split_panel()
             self._sync_focus_flags()
             self._refresh_top_state()
+            self.schedule_session_save()
             return
 
         if self._focused_tile_id is not None:
@@ -461,6 +604,7 @@ class MainWindow(QMainWindow):
 
         self._sync_focus_flags()
         self._refresh_top_state()
+        self.schedule_session_save()
 
     def set_split_tile(self, tile_id: int) -> None:
         if self._focused_tile_id is None:
@@ -508,6 +652,7 @@ class MainWindow(QMainWindow):
         self._show_active_workspace()
         self._sync_focus_flags()
         self._refresh_top_state()
+        self.schedule_session_save()
 
     def _detach_tile_from_grid(self, tile_id: int) -> None:
         tile = self.tiles[tile_id]
@@ -516,7 +661,8 @@ class MainWindow(QMainWindow):
             return
         if parent is getattr(self.focus_view, "split_tile_host", None):
             return
-        self.page_grids[self._tile_page_index(tile_id)].remove_tile(tile)
+        slot_index = self._tile_slot_index(tile_id)
+        self.page_grids[slot_index // TILES_PER_PAGE].remove_tile(tile)
 
     def _return_focus_tile_to_grid(self, tile_id: int) -> None:
         tile = self.tiles[tile_id]
@@ -524,19 +670,21 @@ class MainWindow(QMainWindow):
             self.focus_view.clear_main_tile_widget()
         else:
             self.focus_view.clear_tile_widget()
-        self.page_stack.setCurrentIndex(self._tile_page_index(tile_id))
-        self.page_grids[self._tile_page_index(tile_id)].place_tile(
+        slot_index = self._tile_slot_index(tile_id)
+        self.page_stack.setCurrentIndex(slot_index // TILES_PER_PAGE)
+        self.page_grids[slot_index // TILES_PER_PAGE].place_tile(
             tile,
-            tile_id % TILES_PER_PAGE,
+            slot_index % TILES_PER_PAGE,
         )
 
     def _return_split_tile_to_grid(self, tile_id: int) -> None:
         tile = self.tiles[tile_id]
         if hasattr(self.focus_view, "clear_split_tile_widget"):
             self.focus_view.clear_split_tile_widget()
-        self.page_grids[self._tile_page_index(tile_id)].place_tile(
+        slot_index = self._tile_slot_index(tile_id)
+        self.page_grids[slot_index // TILES_PER_PAGE].place_tile(
             tile,
-            tile_id % TILES_PER_PAGE,
+            slot_index % TILES_PER_PAGE,
         )
 
     def _clear_split_tile(self) -> None:
@@ -618,19 +766,21 @@ class MainWindow(QMainWindow):
             replace(tile.state) for _, tile in sorted(self.tiles.items())
         ]
         self.focus_view.refresh_slots(self.app_state.tiles, self._focused_tile_id)
-        self.page_matrix.set_split_pairs(self._split_pairs, self.app_state.tiles)
-        self.page_matrix.refresh_all_slots(self.app_state.tiles)
+        slot_states = self._slot_states()
+        self.page_matrix.set_split_pairs(self._slot_split_pairs(), slot_states)
+        self.page_matrix.refresh_all_slots(slot_states)
 
     def _current_matrix_slot(self) -> int | None:
         if self._focused_tile_id is not None:
-            return self._focused_tile_id
+            return self._tile_slot_index(self._focused_tile_id)
         if self.app_state.active_view == "run":
             return None
-        return self._last_selected_tile_id
+        return self._tile_slot_index(self._last_selected_tile_id)
 
     def _refresh_top_state(self) -> None:
-        self.page_matrix.set_split_pairs(self._split_pairs, self.app_state.tiles)
-        self.page_matrix.refresh_all_slots(self.app_state.tiles)
+        slot_states = self._slot_states()
+        self.page_matrix.set_split_pairs(self._slot_split_pairs(), slot_states)
+        self.page_matrix.refresh_all_slots(slot_states)
 
         loaded = sum(1 for tile in self.app_state.tiles if tile.has_content)
         loading = sum(1 for tile in self.app_state.tiles if tile.is_loading)
@@ -667,6 +817,7 @@ class MainWindow(QMainWindow):
             self._split_tile_id = None
         self._sync_focus_flags()
         self._refresh_top_state()
+        self.schedule_session_save()
 
     def toggle_global_fullscreen(self) -> None:
         if self.isFullScreen():
@@ -676,6 +827,12 @@ class MainWindow(QMainWindow):
             self.showFullScreen()
             self.fullscreen_button.setText("Quitter plein écran")
         self.app_state.is_fullscreen = self.isFullScreen()
+        self.schedule_session_save()
+
+    def schedule_session_save(self) -> None:
+        if self._restoring_session:
+            return
+        self._save_timer.start()
 
     def on_tile_state_changed(self, state_object: object) -> None:
         self._handle_tile_state_changed(state_object)
@@ -683,11 +840,13 @@ class MainWindow(QMainWindow):
             self._clear_split_if_tile_became_empty(state_object)
         self._sync_focus_flags()
         self._refresh_top_state()
+        self.schedule_session_save()
 
     def _restore_session(self) -> None:
         payload = load_session_payload()
         if not payload:
             self._show_active_workspace()
+            self._restoring_session = False
             return
 
         window_payload = payload.get("window")
@@ -696,6 +855,8 @@ class MainWindow(QMainWindow):
             height = _clamp_int(window_payload.get("height"), MINIMUM_WINDOW_SIZE.height(), 10000, DEFAULT_WINDOW_SIZE.height())
             self.resize(width, height)
             self.app_state.window_size = self.size()
+
+        self.app_state.tile_positions = self._tile_positions_from_payload(payload)
 
         tiles_payload = payload.get("tiles")
         if isinstance(tiles_payload, list):
@@ -711,6 +872,8 @@ class MainWindow(QMainWindow):
                 except (TypeError, ValueError):
                     zoom_factor = 1.0
                 self.tiles[tile_id].restore_from_session(current_url=current_url, zoom_factor=zoom_factor)
+
+        self._rebuild_tile_layout()
 
         self._last_selected_tile_id = _clamp_int(
             payload.get("last_selected_tile_id"),
@@ -755,12 +918,15 @@ class MainWindow(QMainWindow):
             self.showNormal()
             self.fullscreen_button.setText("Plein écran")
 
+        self._restoring_session = False
+
     def _save_session(self) -> None:
         self.app_state.window_size = self.size()
         self.app_state.focused_tile_id = self._focused_tile_id
         self.app_state.is_fullscreen = self.isFullScreen()
         self.app_state.last_selected_tile_id = self._last_selected_tile_id
         self.app_state.split_panel_visible = self.focus_view.is_split_panel_visible() if self._focused_tile_id is not None else False
+        self.app_state.tile_positions = [self._tile_slot_index(tile_id) for tile_id in range(TILE_COUNT)]
         self.app_state.tiles = [replace(tile.state) for _, tile in sorted(self.tiles.items())]
         save_session_payload(serialize_app_state(self.app_state))
 
@@ -768,11 +934,13 @@ class MainWindow(QMainWindow):
         self.app_state.window_size = self.size()
         if self.app_state.active_view == "run":
             self.terminal_workspace.fit_terminal()
+        self.schedule_session_save()
         super().resizeEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self._save_timer.stop()
+        self._save_session()
         self.terminal_workspace.shutdown()
         self.web_media_controller.shutdown()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-        self._save_session()
         super().closeEvent(event)

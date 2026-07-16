@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 
 from PySide6.QtCore import QSize, QStandardPaths
@@ -34,6 +35,7 @@ TOOLBAR_BUTTON_SIZE = QSize(34, 30)
 MEMORY_SLOT_BUTTON_SIZE = QSize(32, 30)
 URL_BAR_HEIGHT = 30
 SESSION_FILENAME = "dashboard_session.json"
+DATA_ROOT_ENV_VAR = "NINO_DATA_ROOT"
 
 
 @dataclass(frozen=True)
@@ -61,8 +63,12 @@ PALETTE = Palette()
 
 def app_data_root() -> Path:
     """Return a writable application data directory."""
-    location = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
-    path = Path(location) / APP_NAME
+    root_override = os.environ.get(DATA_ROOT_ENV_VAR, "").strip()
+    if root_override:
+        path = Path(root_override)
+    else:
+        location = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
+        path = Path(location) / APP_NAME
     path.mkdir(parents=True, exist_ok=True)
     return path
 
