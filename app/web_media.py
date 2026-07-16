@@ -704,7 +704,7 @@ class WebMediaPermissionController(QObject):
         return self.store.path
 
     def shutdown(self) -> None:
-        for tile in list(self._tile_pages.values()):
+        for tile in list(self._page_tiles.values()):
             try:
                 tile.reset_to_empty()
             except RuntimeError:
