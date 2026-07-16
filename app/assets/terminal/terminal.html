@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self' data: blob: file: ws://127.0.0.1:*; script-src 'self' 'unsafe-inline' 'unsafe-eval' file:; style-src 'self' 'unsafe-inline' file:;"
+  >
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nino Terminal</title>
+  <link rel="stylesheet" href="xterm.css">
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #14171c;
+      color: #edf2f7;
+      font-family: Consolas, "Courier New", monospace;
+    }
+
+    #terminal-shell {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      height: 100%;
+      background: #1c2128;
+    }
+
+    #status-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 12px;
+      border-bottom: 1px solid #313a46;
+      background: #1f252d;
+      font-family: "Segoe UI", sans-serif;
+      font-size: 12px;
+    }
+
+    #mode-pill {
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: #21415f;
+      border: 1px solid #3b6e9e;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+
+    #state-text {
+      color: #b8c0cc;
+      white-space: nowrap;
+    }
+
+    #terminal-host {
+      color: #7f8a99;
+      white-space: nowrap;
+    }
+
+    #terminal {
+      flex: 1;
+      width: 100%;
+      min-height: 0;
+      padding: 6px 8px 10px;
+      box-sizing: border-box;
+    }
+
+    .xterm {
+      height: 100%;
+    }
+  </style>
+</head>
+<body>
+  <div id="terminal-shell">
+    <div id="status-bar">
+      <div id="mode-pill">MODE MANUEL</div>
+      <div id="state-text">Connexion…</div>
+      <div id="terminal-host"></div>
+    </div>
+    <div id="terminal"></div>
+  </div>
+
+  <script src="xterm.js"></script>
+  <script src="addon-fit.js"></script>
+  <script>
+    (() => {
+      const params = new URLSearchParams(window.location.search);
+      const wsUrl = params.get("ws") || "ws://127.0.0.1:8765";
+      const hostLabel = document.getElementById("terminal-host");
+      const stateText = document.getElementById("state-text");
+      hostLabel.textContent = wsUrl.replace(/^ws:\/\//, "");
+
+      const term = new Terminal({
+        cursorBlink: true,
+        scrollback: 5000,
+        convertEol: true,
+        fontFamily: "Consolas, 'Courier New', monospace",
+        fontSize: 14,
+        theme: {
+          background: "#14171c",
+          foreground: "#edf2f7",
+          cursor: "#5dade2",
+          selectionBackground: "rgba(93, 173, 226, 0.35)",
+        },
+      });
+
+      const fitAddon = new FitAddon.FitAddon();
+      term.loadAddon(fitAddon);
+      term.open(document.getElementById("terminal"));
+      fitAddon.fit();
+      term.focus();
+
+      let socket = null;
+      let reconnectTimer = null;
+
+      function setState(text) {
+        stateText.textContent = text;
+      }
+
+      function sendPayload(payload) {
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+          return false;
+        }
+        socket.send(JSON.stringify(payload));
+        return true;
+      }
+
+      function currentBufferText() {
+        const active = term.buffer.active;
+        const lines = [];
+        for (let i = 0; i < active.length; i += 1) {
+          const line = active.getLine(i);
+          lines.push(line ? line.translateToString(true) : "");
+        }
+        return lines.join("\n");
+      }
+
+      function fitAndResize() {
+        fitAddon.fit();
+        sendPayload({ type: "resize", cols: term.cols, rows: term.rows });
+      }
+
+      function connect() {
+        setState("Connexion locale…");
+        socket = new WebSocket(wsUrl);
+
+        socket.addEventListener("open", () => {
+          setState("Connecté");
+          fitAndResize();
+          term.focus();
+        });
+
+        socket.addEventListener("message", (event) => {
+          let payload = null;
+          try {
+            payload = JSON.parse(event.data);
+          } catch (_error) {
+            return;
+          }
+          if (!payload || !payload.type) {
+            return;
+          }
+          if (payload.type === "snapshot") {
+            term.reset();
+            if (payload.data) {
+              term.write(payload.data);
+            }
+            fitAndResize();
+          } else if (payload.type === "output") {
+            term.write(payload.data || "");
+          } else if (payload.type === "meta") {
+            setState(`Connecté • PID ${payload.pid ?? "?"}`);
+          } else if (payload.type === "pong") {
+            setState("Connecté");
+          }
+        });
+
+        socket.addEventListener("close", () => {
+          setState("Déconnecté, reconnexion…");
+          if (reconnectTimer !== null) {
+            window.clearTimeout(reconnectTimer);
+          }
+          reconnectTimer = window.setTimeout(connect, 1000);
+        });
+
+        socket.addEventListener("error", () => {
+          setState("Erreur de connexion locale");
+        });
+      }
+
+      term.onData((data) => {
+        sendPayload({ type: "input", data });
+      });
+
+      term.attachCustomKeyEventHandler((event) => {
+        if (event.type === "keydown" && event.ctrlKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "c" && !term.hasSelection()) {
+          sendPayload({ type: "interrupt" });
+          return false;
+        }
+        return true;
+      });
+
+      const observer = new ResizeObserver(() => {
+        fitAndResize();
+      });
+      observer.observe(document.getElementById("terminal"));
+      window.addEventListener("resize", fitAndResize);
+
+      window.ninoTerminalApi = {
+        dumpText: currentBufferText,
+        geometry() {
+          return { cols: term.cols, rows: term.rows };
+        },
+        sendLine(text) {
+          sendPayload({ type: "input", data: `${text}\r` });
+        },
+        sendText(text) {
+          sendPayload({ type: "input", data: text });
+        },
+        sendInterrupt() {
+          sendPayload({ type: "interrupt" });
+        },
+        fitNow() {
+          fitAndResize();
+        },
+        getSelection() {
+          return term.getSelection();
+        },
+        selectAll() {
+          term.selectAll();
+          return term.hasSelection();
+        },
+        pasteText(text) {
+          sendPayload({ type: "input", data: text });
+        },
+      };
+
+      connect();
+    })();
+  </script>
+</body>
+</html>

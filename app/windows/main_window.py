@@ -32,6 +32,7 @@ from app.config import (
 )
 from app.session_store import load_session_payload, save_session_payload, serialize_app_state
 from app.state import AppState, TileState
+from app.terminal import TerminalRuntime
 from app.web_profile import build_shared_profile
 from app.widgets.dashboard_grid import DashboardGrid
 from app.widgets.focus_view import FocusView
@@ -67,6 +68,7 @@ class MainWindow(QMainWindow):
 
         self.tiles: dict[int, WebTile] = {}
         self.page_grids: list[DashboardGrid] = []
+        self.terminal_runtime = TerminalRuntime(start_dir=Path(__file__).resolve().parents[2])
         self._focused_tile_id: int | None = None
         self._split_tile_id: int | None = None
         self._split_pairs: dict[int, int] = {}
@@ -169,7 +171,7 @@ class MainWindow(QMainWindow):
         self.run_workspace = RunWorkspace()
         self.run_workspace.prompt_submitted.connect(self.on_run_prompt_submitted)
 
-        self.terminal_workspace = TerminalWorkspace()
+        self.terminal_workspace = TerminalWorkspace(self.terminal_runtime)
         self.terminal_workspace.back_requested.connect(self.return_from_terminal_page)
         self.page_stack.addWidget(self.terminal_workspace)
 
@@ -230,6 +232,7 @@ class MainWindow(QMainWindow):
         self._refresh_top_state()
 
     def show_terminal_page(self) -> None:
+        self.terminal_workspace.activate()
         self.app_state.active_view = "run"
         if self._focused_tile_id is None:
             self._show_active_workspace()
@@ -239,6 +242,7 @@ class MainWindow(QMainWindow):
         self.show_terminal_page()
 
     def return_from_terminal_page(self) -> None:
+        self.terminal_workspace.refresh_runtime_status()
         self.show_tile_page(self.app_state.current_page_index)
 
     def _resolve_run_backend(self) -> tuple[Path, Path, str] | None:
@@ -742,8 +746,11 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event) -> None:
         self.app_state.window_size = self.size()
+        if self.app_state.active_view == "run":
+            self.terminal_workspace.fit_terminal()
         super().resizeEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self.terminal_workspace.shutdown()
         self._save_session()
         super().closeEvent(event)
