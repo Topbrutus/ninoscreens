@@ -35,6 +35,7 @@ from app.widgets.dashboard_grid import DashboardGrid
 from app.widgets.focus_view import FocusView
 from app.widgets.page_matrix import PageMatrix
 from app.widgets.run_workspace import RunWorkspace
+from app.widgets.terminal_workspace import TerminalWorkspace
 from app.widgets.web_tile import WebTile
 
 
@@ -107,7 +108,7 @@ class MainWindow(QMainWindow):
 
         self.page_matrix = PageMatrix()
         self.page_matrix.slot_activated.connect(self.activate_memory_slot)
-        self.page_matrix.run_activated.connect(self.show_run_page)
+        self.page_matrix.run_activated.connect(self.show_terminal_page)
 
         controls_host = QWidget()
         controls_layout = QVBoxLayout(controls_host)
@@ -162,9 +163,13 @@ class MainWindow(QMainWindow):
             self.page_grids.append(grid)
             self.page_stack.addWidget(page)
 
+        # Kept for backend compatibility while the visible RUN entry is replaced by Terminal.
         self.run_workspace = RunWorkspace()
         self.run_workspace.prompt_submitted.connect(self.on_run_prompt_submitted)
-        self.page_stack.addWidget(self.run_workspace)
+
+        self.terminal_workspace = TerminalWorkspace()
+        self.terminal_workspace.back_requested.connect(self.return_from_terminal_page)
+        self.page_stack.addWidget(self.terminal_workspace)
 
         self.focus_view = FocusView()
         self.focus_view.tile_switch_requested.connect(self.set_split_tile)
@@ -222,12 +227,17 @@ class MainWindow(QMainWindow):
             self.page_stack.setCurrentIndex(self.app_state.current_page_index)
         self._refresh_top_state()
 
-    def show_run_page(self) -> None:
+    def show_terminal_page(self) -> None:
         self.app_state.active_view = "run"
         if self._focused_tile_id is None:
             self._show_active_workspace()
         self._refresh_top_state()
 
+    def show_run_page(self) -> None:
+        self.show_terminal_page()
+
+    def return_from_terminal_page(self) -> None:
+        self.show_tile_page(self.app_state.current_page_index)
     def on_run_prompt_submitted(self, text: str) -> None:
         project_root = Path("/home/gaby/MonDeuxiemeProjet")
         cli_path = project_root / "src" / "run_cli.py"
@@ -526,7 +536,7 @@ class MainWindow(QMainWindow):
             else:
                 self.mode_label.setText(f"Focus - tile {self._focused_tile_id + 1}")
         elif self.app_state.active_view == "run":
-            self.mode_label.setText("RUN / Corvo")
+            self.mode_label.setText("Terminal")
         else:
             self.mode_label.setText(
                 f"Page {self.app_state.current_page_index + 1} / {PAGE_COUNT}"
