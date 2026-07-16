@@ -157,6 +157,26 @@ class AgentCockpitController:
     def read_state(self) -> ActionRecord:
         return self.execute(AgentCommand(name="read_state"))
 
+    def type_web_text(
+        self,
+        tile_number: int,
+        text: str,
+        *,
+        submit: bool = True,
+        one_shot: bool = True,
+    ) -> ActionRecord:
+        return self.execute(
+            AgentCommand(
+                name="type_web_text",
+                tile_number=tile_number,
+                payload={
+                    "text": text,
+                    "submit": submit,
+                    "one_shot": one_shot,
+                },
+            )
+        )
+
     def report_blocked(
         self,
         message: str,
@@ -188,7 +208,7 @@ class AgentCockpitController:
                 details={"reason": "missing_command_name"},
             )
 
-        if normalized_name in {"open_url", "focus_tile", "close_tile", "load_memory"}:
+        if normalized_name in {"open_url", "focus_tile", "close_tile", "load_memory", "type_web_text"}:
             self._validate_tile_number(command.tile_number)
 
         if normalized_name == "report_blocked":
@@ -245,5 +265,7 @@ class AgentCockpitController:
                 return f"Page mémorisée rechargée{tile_suffix}."
             case "read_state":
                 return "État complet des carreaux lu."
+            case "type_web_text":
+                return f"Texte envoyé dans le carreau {command.tile_number}."
             case _:
                 return f"Commande {command.name} exécutée."

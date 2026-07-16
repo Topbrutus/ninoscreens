@@ -3,13 +3,16 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+import time
 
 from PySide6.QtCore import QEventLoop, QTimer, Qt, QUrl, Signal, QSize
 from PySide6.QtGui import QColor, QPainter, QPixmap, QIcon
+from PySide6.QtTest import QTest
 
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -86,6 +89,8 @@ class WebTile(QFrame):
         self._media_audio_active = False
         self._media_video_active = False
         self._media_last_error = ""
+        self._web_text_submission_busy = False
+        self._web_text_one_shot_used = False
 
         self.setObjectName("TileFrame")
         self.setProperty("focused", False)
@@ -365,6 +370,609 @@ class WebTile(QFrame):
     def current_page_url(self) -> str:
         return self._state.current_url.strip()
 
+    def _qt_sleep(self, timeout_ms: int) -> None:
+        if timeout_ms <= 0:
+            return
+        loop = QEventLoop()
+        QTimer.singleShot(timeout_ms, loop.quit)
+        loop.exec()
+
+    def _run_javascript_sync(self, script: str, timeout_ms: int = 4000) -> object:
+        if self._page is None:
+            raise RuntimeError("QWebEnginePage indisponible.")
+
+        loop = QEventLoop()
+        result: dict[str, object] = {"ready": False, "value": None}
+
+        def on_result(value: object) -> None:
+            result["ready"] = True
+            result["value"] = value
+            if loop.isRunning():
+                loop.quit()
+
+        try:
+            self._page.runJavaScript(script, on_result)
+        except RuntimeError as exc:
+            raise RuntimeError("QWebEnginePage détruit ou indisponible.") from exc
+
+        if not result["ready"]:
+            QTimer.singleShot(timeout_ms, loop.quit)
+            loop.exec()
+
+        if not result["ready"]:
+            raise TimeoutError("La requête JavaScript a expiré.")
+
+        return result["value"]
+
+    def _parse_json_result(self, raw_value: object) -> dict[str, object]:
+        if isinstance(raw_value, dict):
+            return raw_value
+        text = str(raw_value or "").strip()
+        if not text:
+            raise ValueError("Résultat JavaScript vide.")
+        payload = json.loads(text)
+        if not isinstance(payload, dict):
+            raise ValueError("Résultat JavaScript inattendu.")
+        return payload
+
+    def _web_text_js_helpers(self, text_json: str) -> str:
+        return f"""
+          const ninoText = {text_json};
+          const ninoVisible = (element) => {{
+            if (!(element instanceof HTMLElement)) {{
+              return false;
+            }}
+            const style = window.getComputedStyle(element);
+            if (!style || style.display === "none" || style.visibility === "hidden") {{
+              return false;
+            }}
+            const rect = element.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) {{
+              return false;
+            }}
+            if (element.hasAttribute("hidden") || element.getAttribute("aria-hidden") === "true") {{
+              return false;
+            }}
+            return true;
+          }};
+          const ninoUnique = (items) => {{
+            const seen = new Set();
+            const unique = [];
+            for (const item of items) {{
+              if (!item || seen.has(item)) {{
+                continue;
+              }}
+              seen.add(item);
+              unique.push(item);
+            }}
+            return unique;
+          }};
+          const ninoCollectEditableFields = () => {{
+            const found = [];
+            const add = (element, force = false) => {{
+              if (element && (force || ninoVisible(element)) && !element.disabled && !element.readOnly) {{
+                found.push(element);
+              }}
+            }};
+            const promptEditor = document.querySelector('#prompt-textarea[contenteditable="true"]');
+            if (promptEditor) {{
+              add(promptEditor);
+              return ninoUnique(found);
+            }}
+            const promptTextarea = document.querySelector('textarea[name="prompt-textarea"]');
+            if (promptTextarea) {{
+              add(promptTextarea, true);
+              return ninoUnique(found);
+            }}
+            document.querySelectorAll("textarea").forEach(add);
+            document.querySelectorAll('[contenteditable="true"]').forEach(add);
+            return ninoUnique(found);
+          }};
+          const ninoSetTextareaText = (target, text) => {{
+            const prototype = target instanceof HTMLInputElement
+              ? HTMLInputElement.prototype
+              : HTMLTextAreaElement.prototype;
+            const descriptor = Object.getOwnPropertyDescriptor(prototype, "value")
+              || Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")
+              || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+            if (!descriptor || typeof descriptor.set !== "function") {{
+              return {{ ok: false, stage: "field", error: "missing value setter" }};
+            }}
+            target.focus({{ preventScroll: true }});
+            if (typeof target.select === "function") {{
+              try {{
+                target.select();
+              }} catch (_error) {{
+              }}
+            }}
+            descriptor.set.call(target, "");
+            target.dispatchEvent(new InputEvent("beforeinput", {{
+              bubbles: true,
+              composed: true,
+              cancelable: true,
+              inputType: "deleteContentBackward",
+              data: "",
+            }}));
+            target.dispatchEvent(new InputEvent("input", {{
+              bubbles: true,
+              composed: true,
+              inputType: "deleteContentBackward",
+              data: "",
+            }}));
+            descriptor.set.call(target, text);
+            target.dispatchEvent(new InputEvent("beforeinput", {{
+              bubbles: true,
+              composed: true,
+              cancelable: true,
+              inputType: "insertText",
+              data: text,
+            }}));
+            target.dispatchEvent(new InputEvent("input", {{
+              bubbles: true,
+              composed: true,
+              inputType: "insertText",
+              data: text,
+            }}));
+            target.dispatchEvent(new Event("change", {{ bubbles: true }}));
+            if (String(target.value) !== text) {{
+              return {{ ok: false, stage: "field", error: "textarea value mismatch" }};
+            }}
+            return {{ ok: true }};
+          }};
+          const ninoSetEditableText = (target, text) => {{
+            target.focus({{ preventScroll: true }});
+            const selection = window.getSelection();
+            if (!selection) {{
+              return {{ ok: false, stage: "field", error: "selection unavailable" }};
+            }}
+            const range = document.createRange();
+            range.selectNodeContents(target);
+            selection.removeAllRanges();
+            selection.addRange(range);
+            try {{
+              document.execCommand("delete");
+            }} catch (_error) {{
+            }}
+            const promptTextarea = document.querySelector('textarea[name="prompt-textarea"]');
+            if (promptTextarea && ninoText.length > 0) {{
+              const textareaDescriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")
+                || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+              if (!textareaDescriptor || typeof textareaDescriptor.set !== "function") {{
+                return {{ ok: false, stage: "field", error: "missing textarea setter" }};
+              }}
+              const primeText = ninoText.slice(0, 1);
+              textareaDescriptor.set.call(promptTextarea, primeText);
+              promptTextarea.dispatchEvent(new InputEvent("beforeinput", {{
+                bubbles: true,
+                composed: true,
+                cancelable: true,
+                inputType: "insertText",
+                data: primeText,
+              }}));
+              promptTextarea.dispatchEvent(new InputEvent("input", {{
+                bubbles: true,
+                composed: true,
+                inputType: "insertText",
+                data: primeText,
+              }}));
+            }}
+            const inserted = document.execCommand("insertText", false, text);
+            target.focus({{ preventScroll: true }});
+            const value = (target.innerText || target.textContent || "").replace(/\\u00a0/g, " ").trim();
+            if (!inserted || value !== ninoText) {{
+              return {{ ok: false, stage: "field", error: "contenteditable text mismatch", field_found: true, text_inserted: value }};
+            }}
+            return {{ ok: true }};
+          }};
+          const ninoResolveSendButton = () => {{
+            const candidates = Array.from(document.querySelectorAll("button, [role='button']"))
+              .filter((element) => ninoVisible(element) && !element.disabled && element.getAttribute("aria-disabled") !== "true");
+            const byTestId = candidates.filter((element) =>
+              String(element.getAttribute("data-testid") || "").trim().toLowerCase() === "send-button"
+            );
+            if (byTestId.length === 1) {{
+              return {{ button: byTestId[0] }};
+            }}
+            if (byTestId.length > 1) {{
+              return {{ error: `ambiguous send buttons (${{byTestId.length}})`, stage: "send" }};
+            }}
+            const byLabel = candidates.filter((element) => {{
+              const label = [
+                element.getAttribute("aria-label") || "",
+                element.getAttribute("title") || "",
+                element.textContent || "",
+              ].join(" ").toLowerCase();
+              return /\\b(send|envoyer|submit|soumettre)\\b/i.test(label);
+            }});
+            if (byLabel.length === 1) {{
+              return {{ button: byLabel[0] }};
+            }}
+            if (byLabel.length > 1) {{
+              return {{ error: `ambiguous send buttons (${{byLabel.length}})`, stage: "send" }};
+            }}
+            return {{ error: "send button not found", stage: "send" }};
+          }};
+        """
+
+    def _build_web_text_prepare_script(self, text: str, one_shot: bool) -> str:
+        text_json = json.dumps(str(text))
+        one_shot_json = "true" if one_shot else "false"
+        return f"""
+        (() => {{
+          try {{
+            {self._web_text_js_helpers(text_json)}
+            if ({one_shot_json} && window.__ninoTypeWebTextOneShotUsed) {{
+                return JSON.stringify({{
+                ok: false,
+                stage: "guard",
+                error: "type_web_text one-shot already used",
+              }});
+            }}
+            const promptMessages = document.querySelectorAll('[data-message-author-role]');
+            if (promptMessages.length === 0) {{
+              return JSON.stringify({{
+                ok: false,
+                stage: "thread",
+                error: "conversation not ready",
+                field_found: false,
+              }});
+            }}
+            const editableFields = ninoCollectEditableFields();
+            if (editableFields.length === 0) {{
+              return JSON.stringify({{
+                ok: false,
+                stage: "field",
+                error: "no visible editable field",
+                field_found: false,
+              }});
+            }}
+            if (editableFields.length > 1) {{
+              return JSON.stringify({{
+                ok: false,
+                stage: "field",
+                error: `ambiguous editable fields (${{editableFields.length}})`,
+                field_found: false,
+              }});
+            }}
+            const target = editableFields[0];
+            const result = target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement
+              ? ninoSetTextareaText(target, ninoText)
+              : ninoSetEditableText(target, ninoText);
+            if (!result.ok) {{
+              return JSON.stringify({{
+                ...result,
+                field_found: true,
+              }});
+            }}
+            return JSON.stringify({{
+              ok: true,
+              field_found: true,
+              text_inserted: ninoText,
+              submitted: false,
+            }});
+          }} catch (error) {{
+            return JSON.stringify({{
+              ok: false,
+              stage: "exception",
+              error: String(error && error.message ? error.message : error),
+            }});
+          }}
+        }})()
+        """
+
+    def _build_web_text_verify_script(self, text: str) -> str:
+        text_json = json.dumps(str(text))
+        return f"""
+        (() => {{
+          try {{
+            {self._web_text_js_helpers(text_json)}
+            const editableFields = ninoCollectEditableFields();
+            if (editableFields.length === 0) {{
+              return JSON.stringify({{
+                ok: false,
+                stage: "verify",
+                error: "no visible editable field",
+                field_found: false,
+              }});
+            }}
+            if (editableFields.length > 1) {{
+              return JSON.stringify({{
+                ok: false,
+                stage: "verify",
+                error: `ambiguous editable fields (${{editableFields.length}})`,
+                field_found: false,
+              }});
+            }}
+            const target = editableFields[0];
+            const value = target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement
+              ? String(target.value || "")
+              : (target.innerText || target.textContent || "").replace(/\\u00a0/g, " ").trim();
+            if (value !== ninoText) {{
+              return JSON.stringify({{
+                ok: false,
+                stage: "verify",
+                error: "contenteditable text mismatch",
+                field_found: true,
+                text_inserted: value,
+              }});
+            }}
+            return JSON.stringify({{
+              ok: true,
+              field_found: true,
+              text_inserted: ninoText,
+            }});
+          }} catch (error) {{
+            return JSON.stringify({{
+              ok: false,
+              stage: "exception",
+              error: String(error && error.message ? error.message : error),
+            }});
+          }}
+        }})()
+        """
+
+    def _build_web_text_submit_script(self, text: str, one_shot: bool) -> str:
+        text_json = json.dumps(str(text))
+        one_shot_json = "true" if one_shot else "false"
+        return f"""
+        (() => {{
+          try {{
+            {self._web_text_js_helpers(text_json)}
+            const editableFields = ninoCollectEditableFields();
+            if (editableFields.length === 0) {{
+              return JSON.stringify({{
+                ok: false,
+                stage: "field",
+                error: "no visible editable field",
+                field_found: false,
+              }});
+            }}
+            if (editableFields.length > 1) {{
+              return JSON.stringify({{
+                ok: false,
+                stage: "field",
+                error: `ambiguous editable fields (${{editableFields.length}})`,
+                field_found: false,
+              }});
+            }}
+            const target = editableFields[0];
+            const value = target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement
+              ? String(target.value || "")
+              : (target.innerText || target.textContent || "").replace(/\\u00a0/g, " ").trim();
+            if (value !== ninoText) {{
+              return JSON.stringify({{
+                ok: false,
+                stage: "field",
+                error: "inserted text mismatch",
+                field_found: true,
+                text_inserted: value,
+              }});
+            }}
+            const resolved = ninoResolveSendButton();
+            if (!resolved.button) {{
+              return JSON.stringify({{
+                ok: false,
+                stage: resolved.stage || "send",
+                error: resolved.error || "send button not found",
+                field_found: true,
+                text_inserted: ninoText,
+              }});
+            }}
+            if (resolved.button.disabled || resolved.button.getAttribute("aria-disabled") === "true") {{
+              return JSON.stringify({{
+                ok: false,
+                stage: "send",
+                error: "send button disabled",
+                field_found: true,
+                text_inserted: ninoText,
+              }});
+            }}
+            try {{
+              resolved.button.click();
+            }} catch (error) {{
+              return JSON.stringify({{
+                ok: false,
+                stage: "send",
+                error: String(error && error.message ? error.message : error),
+                field_found: true,
+                text_inserted: ninoText,
+              }});
+            }}
+            if ({one_shot_json}) {{
+              window.__ninoTypeWebTextOneShotUsed = true;
+            }}
+            return JSON.stringify({{
+              ok: true,
+              field_found: true,
+              text_inserted: ninoText,
+              submitted: true,
+            }});
+          }} catch (error) {{
+            return JSON.stringify({{
+              ok: false,
+              stage: "exception",
+              error: String(error && error.message ? error.message : error),
+            }});
+          }}
+        }})()
+        """
+
+    def send_text_to_active_web_page(
+        self,
+        text: str,
+        *,
+        submit: bool,
+        one_shot: bool = True,
+    ) -> dict[str, object]:
+        if self._page is None or self._web_view is None or not self._state.has_content:
+            return {
+                "ok": False,
+                "stage": "page",
+                "error": "active web page unavailable",
+            }
+
+        current_url = self._state.current_url.strip()
+        if not current_url.startswith("https://chatgpt.com/") and current_url != "https://chatgpt.com":
+            return {
+                "ok": False,
+                "stage": "url",
+                "error": "target URL must start with https://chatgpt.com/",
+            }
+
+        if one_shot and self._web_text_one_shot_used:
+            return {
+                "ok": False,
+                "stage": "guard",
+                "error": "type_web_text one-shot already used",
+            }
+
+        if self._web_text_submission_busy:
+            return {
+                "ok": False,
+                "stage": "busy",
+                "error": "another web text submission is already running",
+            }
+
+        self._web_text_submission_busy = True
+        try:
+            if self._browser_container is not None:
+                self.stack.setCurrentWidget(self._browser_container)
+            self._web_view.show()
+            self._web_view.raise_()
+            self._web_view.setFocus(Qt.FocusReason.OtherFocusReason)
+            self._web_view.activateWindow()
+            self._qt_sleep(50)
+
+            prepare_script = self._build_web_text_prepare_script(text, one_shot=one_shot)
+            prepare_result: dict[str, object] | None = None
+            deadline = time.monotonic() + 8.0
+            while True:
+                raw_result = self._run_javascript_sync(prepare_script, timeout_ms=1500)
+                prepare_result = self._parse_json_result(raw_result)
+                if prepare_result.get("ok"):
+                    break
+                stage = str(prepare_result.get("stage", "") or "")
+                if stage not in {"field", "thread"}:
+                    return prepare_result
+                if time.monotonic() >= deadline:
+                    return prepare_result
+                self._qt_sleep(150)
+
+            verify_script = self._build_web_text_verify_script(text)
+            verify_result: dict[str, object] | None = None
+            deadline = time.monotonic() + 6.0
+            while True:
+                raw_result = self._run_javascript_sync(verify_script, timeout_ms=1500)
+                verify_result = self._parse_json_result(raw_result)
+                if verify_result.get("ok"):
+                    break
+                stage = str(verify_result.get("stage", "") or "")
+                if stage not in {"verify"}:
+                    return verify_result
+                if time.monotonic() >= deadline:
+                    return verify_result
+                self._qt_sleep(150)
+
+            if not submit:
+                return {
+                    "ok": True,
+                    "field_found": True,
+                    "text_inserted": str(text),
+                    "submitted": False,
+                }
+
+            self._web_view.setFocus(Qt.FocusReason.OtherFocusReason)
+            self._qt_sleep(50)
+            focus_widget = QApplication.focusWidget()
+            if focus_widget is None:
+                return {
+                    "ok": False,
+                    "stage": "send",
+                    "error": "focus widget unavailable",
+                    "field_found": True,
+                    "text_inserted": str(text),
+                }
+
+            try:
+                QTest.keyClick(focus_widget, Qt.Key.Key_Return)
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "stage": "send",
+                    "error": str(exc),
+                    "field_found": True,
+                    "text_inserted": str(text),
+                }
+
+            text_json = json.dumps(str(text))
+            check_script = f"""
+            (() => {{
+              try {{
+                {self._web_text_js_helpers(text_json)}
+                const promptMessages = document.querySelectorAll('[data-message-author-role]');
+                const editor = document.querySelector('#prompt-textarea[contenteditable="true"]');
+                const sendButton = document.querySelector('button[data-testid="send-button"]');
+                const editorText = editor ? (editor.innerText || editor.textContent || '').replace(/\\u00a0/g, ' ').trim() : '';
+                return JSON.stringify({{
+                  ok: true,
+                  field_found: true,
+                  text_inserted: ninoText,
+                  editor_text: editorText,
+                  send_disabled: sendButton ? !!sendButton.disabled : null,
+                  message_count: promptMessages.length,
+                }});
+              }} catch (error) {{
+                return JSON.stringify({{
+                  ok: false,
+                  stage: "exception",
+                  error: String(error && error.message ? error.message : error),
+                }});
+              }}
+            }})()
+            """
+            initial_message_count = int(prepare_result.get("message_count", 0)) if isinstance(prepare_result, dict) else 0
+            deadline = time.monotonic() + 6.0
+            while True:
+                self._qt_sleep(150)
+                raw_result = self._run_javascript_sync(check_script, timeout_ms=1500)
+                submit_result = self._parse_json_result(raw_result)
+                editor_text = str(submit_result.get("editor_text", "") or "")
+                send_disabled = submit_result.get("send_disabled")
+                message_count = int(submit_result.get("message_count", 0) or 0)
+                if editor_text == "" and send_disabled is True:
+                    if one_shot:
+                        self._web_text_one_shot_used = True
+                    return {
+                        "ok": True,
+                        "field_found": True,
+                        "text_inserted": str(text),
+                        "submitted": True,
+                        "message_count": message_count,
+                    }
+                if message_count > initial_message_count:
+                    if one_shot:
+                        self._web_text_one_shot_used = True
+                    return {
+                        "ok": True,
+                        "field_found": True,
+                        "text_inserted": str(text),
+                        "submitted": True,
+                        "message_count": message_count,
+                    }
+                if time.monotonic() >= deadline:
+                    return {
+                        "ok": False,
+                        "stage": "send",
+                        "error": "submission not confirmed",
+                        "field_found": True,
+                        "text_inserted": str(text),
+                        "editor_text": editor_text,
+                        "send_disabled": send_disabled,
+                        "message_count": message_count,
+                    }
+        finally:
+            self._web_text_submission_busy = False
+
     def reload_current(self) -> None:
         if self._web_view is not None and self._state.has_content:
             self._web_view.reload()
@@ -450,6 +1058,8 @@ class WebTile(QFrame):
         self.clear_media_message()
         self.empty_url_edit.clear()
         self.empty_error_label.hide()
+        self._web_text_submission_busy = False
+        self._web_text_one_shot_used = False
         self._state.current_url = ""
         self._state.title = ""
         self._state.domain = ""

@@ -31,6 +31,7 @@ from app.config import (
     TILE_COUNT,
     TILES_PER_PAGE,
 )
+from app.direct_control import AgentCockpitController, AgentCommand, BlockedAction
 from app.session_store import load_session_payload, save_session_payload, serialize_app_state
 from app.state import AppState, TileState
 from app.terminal import TerminalRuntime
@@ -89,6 +90,18 @@ class MainWindow(QMainWindow):
         self._restore_session()
         self._sync_focus_flags()
         self._refresh_top_state()
+
+        self.direct_controller = AgentCockpitController(
+            tile_count=TILE_COUNT,
+            handlers={
+                "open_url": self._handle_open_url_command,
+                "focus_tile": self._handle_focus_tile_command,
+                "close_tile": self._handle_close_tile_command,
+                "load_memory": self._handle_load_memory_command,
+                "read_state": self._handle_read_state_command,
+                "type_web_text": self._handle_type_web_text_command,
+            },
+        )
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -212,6 +225,128 @@ class MainWindow(QMainWindow):
             page_index = self._tile_page_index(tile_id)
             slot_index = tile_id % TILES_PER_PAGE
             self.page_grids[page_index].place_tile(tile, slot_index)
+
+    def _command_tile_id(self, tile_number: int | None) -> int:
+        if tile_number is None:
+            raise BlockedAction(
+                "Numéro de carreau requis.",
+                human_validation_required=True,
+                details={"reason": "missing_tile_number"},
+            )
+        tile_id = tile_number - 1
+        if tile_id < 0 or tile_id >= TILE_COUNT:
+            raise BlockedAction(
+                f"Carreau {tile_number} invalide. Utiliser un numéro entre 1 et {TILE_COUNT}.",
+                human_validation_required=True,
+                details={"reason": "invalid_tile_number", "tile_count": TILE_COUNT},
+            )
+        return tile_id
+
+    def _build_direct_state_snapshot(self) -> dict[str, object]:
+        return {
+            "focused_tile_id": self._focused_tile_id,
+            "current_page_index": self.app_state.current_page_index,
+            "active_view": self.app_state.active_view,
+            "is_fullscreen": self.app_state.is_fullscreen,
+            "last_selected_tile_id": self._last_selected_tile_id,
+            "split_panel_visible": self.focus_view.is_split_panel_visible(),
+            "tile_positions": list(self.app_state.tile_positions),
+            "tiles": [
+                {
+                    "tile_id": tile.tile_id,
+                    "current_url": tile.current_page_url(),
+                    "title": tile.state.title,
+                    "has_content": tile.state.has_content,
+                    "is_loading": tile.state.is_loading,
+                    "status": tile.state.status.value,
+                }
+                for tile in self.tiles.values()
+            ],
+        }
+
+    def _handle_open_url_command(self, command: AgentCommand) -> dict[str, object]:
+        tile_id = self._command_tile_id(command.tile_number)
+        url = command.url.strip()
+        if not url:
+            raise BlockedAction(
+                "URL requise.",
+                human_validation_required=True,
+                details={"reason": "missing_url"},
+            )
+        self.show_tile_page(self._tile_page_index(tile_id))
+        self.tiles[tile_id].open_url_text(url)
+        return {
+            "message": f"URL ouverte dans le carreau {command.tile_number}.",
+            "tile_id": tile_id,
+            "url": url,
+        }
+
+    def _handle_focus_tile_command(self, command: AgentCommand) -> dict[str, object]:
+        tile_id = self._command_tile_id(command.tile_number)
+        self.enter_focus_mode(tile_id)
+        return {
+            "message": f"Carreau {command.tile_number} mis en focus.",
+            "tile_id": tile_id,
+        }
+
+    def _handle_close_tile_command(self, command: AgentCommand) -> dict[str, object]:
+        tile_id = self._command_tile_id(command.tile_number)
+        if self._focused_tile_id == tile_id:
+            self.exit_focus_mode()
+        self.tiles[tile_id].reset_to_empty()
+        return {
+            "message": f"Carreau {command.tile_number} fermé.",
+            "tile_id": tile_id,
+        }
+
+    def _handle_load_memory_command(self, command: AgentCommand) -> dict[str, object]:
+        tile_id = self._command_tile_id(command.tile_number)
+        self.activate_memory_slot(tile_id)
+        return {
+            "message": f"Page mémorisée rechargée dans le carreau {command.tile_number}.",
+            "tile_id": tile_id,
+        }
+
+    def _handle_read_state_command(self, _command: AgentCommand) -> dict[str, object]:
+        return {
+            "message": "État complet des carreaux lu.",
+            "state": self._build_direct_state_snapshot(),
+        }
+
+    def _handle_type_web_text_command(self, command: AgentCommand) -> dict[str, object]:
+        tile_id = self._command_tile_id(command.tile_number)
+        text = str(command.payload.get("text", "")).strip()
+        if not text:
+            raise BlockedAction(
+                "Texte requis.",
+                human_validation_required=True,
+                details={"reason": "missing_text"},
+            )
+
+        submit = _coerce_bool(command.payload.get("submit", True))
+        one_shot = _coerce_bool(command.payload.get("one_shot", True))
+
+        if self._focused_tile_id is not None and self._focused_tile_id != tile_id:
+            self.exit_focus_mode()
+        self.show_tile_page(self._tile_page_index(tile_id))
+
+        result = self.tiles[tile_id].send_text_to_active_web_page(
+            text,
+            submit=submit,
+            one_shot=one_shot,
+        )
+        if not result.get("ok"):
+            raise BlockedAction(
+                str(result.get("error", "Échec de l'envoi du texte.")),
+                human_validation_required=False,
+                details=result,
+            )
+
+        return {
+            "message": f"Texte envoyé dans le carreau {command.tile_number}.",
+            **result,
+            "tile_id": tile_id,
+        }
 
     def _tile_slot_index(self, tile_id: int) -> int:
         if 0 <= tile_id < len(self.app_state.tile_positions):
