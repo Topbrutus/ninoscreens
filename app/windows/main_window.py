@@ -6,8 +6,9 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 
-from PySide6.QtCore import QCoreApplication, QEvent, QTimer
+from PySide6.QtCore import QCoreApplication, QEvent, QFileSystemWatcher, QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QFrame,
@@ -30,8 +31,21 @@ from app.config import (
     RUN_PAGE_INDEX,
     TILE_COUNT,
     TILES_PER_PAGE,
+    app_data_root,
 )
 from app.direct_control import AgentCockpitController, AgentCommand, BlockedAction
+from app.jules_summary import (
+    DEFAULT_SUMMARY_DIR,
+    JulesSummary,
+    JulesSummaryError,
+    append_transmission_record,
+    build_failure_record,
+    build_success_record,
+    has_successful_transmission,
+    latest_untransmitted_summary,
+    load_transmission_store,
+    summary_from_payload,
+)
 from app.session_store import load_session_payload, save_session_payload, serialize_app_state
 from app.state import AppState, TileState
 from app.terminal import TerminalRuntime
@@ -84,6 +98,10 @@ class MainWindow(QMainWindow):
         self._split_tile_id: int | None = None
         self._split_pairs: dict[int, int] = {}
         self._last_selected_tile_id: int = 0
+        self._jules_summary_watcher: QFileSystemWatcher | None = None
+        self._jules_summary_timer: QTimer | None = None
+        self._chatgpt_bridge_watcher: QFileSystemWatcher | None = None
+        self._chatgpt_bridge_timer: QTimer | None = None
 
         self._build_ui()
         self._build_tiles()
@@ -100,8 +118,11 @@ class MainWindow(QMainWindow):
                 "load_memory": self._handle_load_memory_command,
                 "read_state": self._handle_read_state_command,
                 "type_web_text": self._handle_type_web_text_command,
+                "transmit_jules_summary": self._handle_transmit_jules_summary_command,
             },
         )
+        self._setup_jules_summary_watch()
+        self._setup_chatgpt_bridge_ipc()
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -347,6 +368,318 @@ class MainWindow(QMainWindow):
             **result,
             "tile_id": tile_id,
         }
+
+    def _handle_transmit_jules_summary_command(self, command: AgentCommand) -> dict[str, object]:
+        if command.tile_number != 1:
+            raise BlockedAction(
+                "MAUVAISE_TUILE: la transmission Jules est limitée au carreau 1.",
+                human_validation_required=True,
+                details={"status": "MAUVAISE_TUILE", "tile_number": command.tile_number},
+            )
+
+        tile_id = self._command_tile_id(command.tile_number)
+        summary: JulesSummary | None = None
+        conversation_url = ""
+
+        try:
+            if any(str(command.payload.get(key, "") or "").strip() for key in ("summary", "body", "source_path")):
+                summary = summary_from_payload(command.payload)
+            else:
+                summary = latest_untransmitted_summary(
+                    skip_attempted=_coerce_bool(command.payload.get("skip_attempted", False))
+                )
+
+            store = load_transmission_store()
+            if has_successful_transmission(summary, store):
+                raise JulesSummaryError(
+                    "RESUME_DEJA_TRANSMIS",
+                    "Résumé déjà transmis.",
+                    details={"summary_id": summary.source_id, "sha256": summary.sha256},
+                )
+
+            if self._focused_tile_id is not None and self._focused_tile_id != tile_id:
+                self.exit_focus_mode()
+            self.show_tile_page(self._tile_page_index(tile_id))
+
+            tile = self.tiles[tile_id]
+            conversation_url = tile.current_page_url()
+            assistant_before = tile.read_chatgpt_assistant_state()
+            if not assistant_before.get("ok"):
+                status = self._jules_status_from_web_result(assistant_before)
+                self._record_jules_failure(summary, status, assistant_before, conversation_url, command.tile_number)
+                raise BlockedAction(
+                    f"{status}: {assistant_before.get('error', 'ChatGPT non prêt.')}",
+                    human_validation_required=True,
+                    details={"status": status, **assistant_before},
+                )
+
+            send_result = tile.send_text_to_active_web_page(
+                summary.formatted_message,
+                submit=True,
+                one_shot=True,
+            )
+            if not send_result.get("ok"):
+                status = self._jules_status_from_web_result(send_result)
+                self._record_jules_failure(summary, status, send_result, conversation_url, command.tile_number)
+                raise BlockedAction(
+                    f"{status}: {send_result.get('error', 'Envoi Jules échoué.')}",
+                    human_validation_required=True,
+                    details={"status": status, **send_result},
+                )
+
+            previous_count = int(assistant_before.get("assistant_count", 0) or 0)
+            confirmation = tile.wait_for_chatgpt_summary_confirmation(previous_count)
+            if not confirmation.get("ok"):
+                status = "CONFIRMATION_NON_REÇUE"
+                self._record_jules_failure(summary, status, confirmation, conversation_url, command.tile_number)
+                raise BlockedAction(
+                    f"{status}: {confirmation.get('error', 'confirmation absente.')}",
+                    human_validation_required=True,
+                    details={"status": status, **confirmation},
+                )
+
+            append_transmission_record(
+                build_success_record(
+                    summary,
+                    conversation_url=conversation_url,
+                    tile_number=command.tile_number,
+                )
+            )
+
+            return {
+                "message": "Résumé Jules transmis dans ChatGPT.",
+                "status": "transmis",
+                "tile_id": tile_id,
+                "tile_number": command.tile_number,
+                "url": conversation_url,
+                "source": summary.source,
+                "source_id": summary.source_id,
+                "sha256": summary.sha256,
+                "external_sha": summary.external_sha,
+                "submitted_once": True,
+                "confirmation_received": True,
+                "confirmation_text": confirmation.get("confirmation_text", ""),
+            }
+        except JulesSummaryError as exc:
+            self._record_jules_failure(summary, exc.status, {"error": exc.message, **exc.details}, conversation_url, command.tile_number)
+            raise BlockedAction(
+                f"{exc.status}: {exc.message}",
+                human_validation_required=True,
+                details={"status": exc.status, **exc.details},
+            ) from exc
+
+    def _record_jules_failure(
+        self,
+        summary: JulesSummary | None,
+        status: str,
+        details: dict[str, object],
+        conversation_url: str,
+        tile_number: int | None,
+    ) -> None:
+        error = str(details.get("error", "") or status)
+        append_transmission_record(
+            build_failure_record(
+                summary,
+                status=status,
+                error=error,
+                conversation_url=conversation_url,
+                tile_number=tile_number,
+            )
+        )
+
+    def _jules_status_from_web_result(self, result: dict[str, object]) -> str:
+        stage = str(result.get("stage", "") or "").strip().lower()
+        error = str(result.get("error", "") or "").strip().lower()
+        if stage == "page":
+            return "CHATGPT_NON_OUVERT"
+        if stage == "url":
+            return "URL_NON_AUTORISÉE"
+        if stage == "field" and "no visible editable field" in error:
+            return "CHAMP_DE_TEXTE_INTROUVABLE"
+        if stage in {"field", "verify"}:
+            return "INSERTION_ÉCHOUÉE"
+        if stage == "send":
+            return "ENVOI_ÉCHOUÉ"
+        if stage == "thread":
+            return "CHATGPT_NON_OUVERT"
+        return "ENVOI_ÉCHOUÉ"
+
+    def _setup_jules_summary_watch(self) -> None:
+        try:
+            DEFAULT_SUMMARY_DIR.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
+
+        self._jules_summary_timer = QTimer(self)
+        self._jules_summary_timer.setSingleShot(True)
+        self._jules_summary_timer.setInterval(1500)
+        self._jules_summary_timer.timeout.connect(self._attempt_auto_jules_summary_transmission)
+
+        self._jules_summary_watcher = QFileSystemWatcher(self)
+        self._jules_summary_watcher.directoryChanged.connect(self._on_jules_summary_source_changed)
+        self._jules_summary_watcher.fileChanged.connect(self._on_jules_summary_source_changed)
+        self._refresh_jules_summary_watch_paths()
+
+    def _refresh_jules_summary_watch_paths(self) -> None:
+        if self._jules_summary_watcher is None:
+            return
+        paths = set(self._jules_summary_watcher.directories()) | set(self._jules_summary_watcher.files())
+        directory_path = str(DEFAULT_SUMMARY_DIR)
+        if DEFAULT_SUMMARY_DIR.exists() and directory_path not in paths:
+            self._jules_summary_watcher.addPath(directory_path)
+        for summary_path in DEFAULT_SUMMARY_DIR.glob("*"):
+            if summary_path.is_file():
+                path_text = str(summary_path)
+                if path_text not in paths:
+                    self._jules_summary_watcher.addPath(path_text)
+
+    def _on_jules_summary_source_changed(self, _path: str) -> None:
+        self._refresh_jules_summary_watch_paths()
+        if self._jules_summary_timer is not None:
+            self._jules_summary_timer.start()
+
+    def _attempt_auto_jules_summary_transmission(self) -> None:
+        if self.direct_controller is None:
+            return
+        self.direct_controller.execute(
+            AgentCommand(
+                name="transmit_jules_summary",
+                tile_number=1,
+                payload={"skip_attempted": True},
+            )
+        )
+
+    def _chatgpt_bridge_request_dir(self) -> Path:
+        path = app_data_root() / "chatgpt_bridge_requests"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _setup_chatgpt_bridge_ipc(self) -> None:
+        try:
+            request_dir = self._chatgpt_bridge_request_dir()
+        except OSError:
+            return
+
+        self._chatgpt_bridge_timer = QTimer(self)
+        self._chatgpt_bridge_timer.setSingleShot(True)
+        self._chatgpt_bridge_timer.setInterval(250)
+        self._chatgpt_bridge_timer.timeout.connect(self._process_chatgpt_bridge_requests)
+
+        self._chatgpt_bridge_watcher = QFileSystemWatcher(self)
+        self._chatgpt_bridge_watcher.directoryChanged.connect(self._on_chatgpt_bridge_request_changed)
+        self._chatgpt_bridge_watcher.addPath(str(request_dir))
+
+    def _on_chatgpt_bridge_request_changed(self, _path: str) -> None:
+        if self._chatgpt_bridge_timer is not None:
+            self._chatgpt_bridge_timer.start()
+
+    def _process_chatgpt_bridge_requests(self) -> None:
+        request_dir = self._chatgpt_bridge_request_dir()
+        processed_dir = request_dir / "processed"
+        processed_dir.mkdir(parents=True, exist_ok=True)
+
+        for request_path in sorted(request_dir.glob("*.json")):
+            if request_path.name.endswith(".result.json"):
+                continue
+            try:
+                payload = json.loads(request_path.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict):
+                    raise ValueError("request payload must be an object")
+                request_id = str(payload.get("request_id", "") or request_path.stem)
+                result = self._handle_chatgpt_bridge_request(payload)
+                result.update(
+                    {
+                        "request_id": request_id,
+                        "ok": bool(result.get("ok", False)),
+                    }
+                )
+            except Exception as exc:
+                request_id = request_path.stem
+                result = {
+                    "request_id": request_id,
+                    "ok": False,
+                    "status": "FAILED_AFTER_5_ATTEMPTS",
+                    "error": str(exc),
+                }
+
+            result_path = request_dir / f"{request_id}.result.json"
+            self._write_json_atomic(result_path, result)
+            try:
+                os.replace(request_path, processed_dir / request_path.name)
+            except OSError:
+                pass
+
+    def _write_json_atomic(self, path: Path, payload: dict[str, object]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                delete=False,
+                dir=str(path.parent),
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+            ) as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+                temp_path = handle.name
+            os.replace(temp_path, path)
+            temp_path = None
+        finally:
+            if temp_path is not None:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+
+    def _handle_chatgpt_bridge_request(self, payload: dict[str, object]) -> dict[str, object]:
+        action = str(payload.get("action", "") or "").strip()
+        if action != "send_chatgpt_summary":
+            return {
+                "ok": False,
+                "status": "FAILED_AFTER_5_ATTEMPTS",
+                "error": f"unsupported bridge action: {action}",
+            }
+
+        tile_number = _clamp_int(payload.get("tile_number", 1), 1, TILE_COUNT, 1)
+        tile_id = self._command_tile_id(tile_number)
+        if self._focused_tile_id is not None and self._focused_tile_id != tile_id:
+            self.exit_focus_mode()
+        self.show_tile_page(self._tile_page_index(tile_id))
+
+        message = str(payload.get("message", "") or "")
+        transmission_key = str(payload.get("transmission_key", "") or "").strip()
+        if not message.strip():
+            return {
+                "ok": False,
+                "status": "FAILED_AFTER_5_ATTEMPTS",
+                "error": "empty bridge message",
+            }
+        if not transmission_key:
+            return {
+                "ok": False,
+                "status": "FAILED_AFTER_5_ATTEMPTS",
+                "error": "missing transmission key",
+            }
+
+        tile = self.tiles[tile_id]
+        conversation_url = tile.current_page_url()
+        result = tile.send_chatgpt_bridge_message(
+            message,
+            transmission_key,
+            max_attempts=_clamp_int(payload.get("max_attempts", 5), 1, 5, 5),
+            retry_delay_ms=max(0, int(payload.get("retry_delay_ms", 30000) or 30000)),
+        )
+        result.update(
+            {
+                "tile_number": tile_number,
+                "url": conversation_url,
+                "transmission_key": transmission_key,
+            }
+        )
+        return result
 
     def _tile_slot_index(self, tile_id: int) -> int:
         if 0 <= tile_id < len(self.app_state.tile_positions):

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime
 import json
 import time
 
@@ -414,6 +415,445 @@ class WebTile(QFrame):
         if not isinstance(payload, dict):
             raise ValueError("Résultat JavaScript inattendu.")
         return payload
+
+    def read_chatgpt_assistant_state(self) -> dict[str, object]:
+        if self._page is None or self._web_view is None or not self._state.has_content:
+            return {
+                "ok": False,
+                "stage": "page",
+                "error": "active web page unavailable",
+            }
+
+        current_url = self._state.current_url.strip()
+        if not current_url.startswith("https://chatgpt.com/") and current_url != "https://chatgpt.com":
+            return {
+                "ok": False,
+                "stage": "url",
+                "error": "target URL must start with https://chatgpt.com/",
+            }
+
+        script = """
+        (() => {
+          try {
+            const messages = Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
+            const last = messages.length > 0 ? messages[messages.length - 1] : null;
+            const text = last ? String(last.innerText || last.textContent || "").trim() : "";
+            return JSON.stringify({
+              ok: true,
+              assistant_count: messages.length,
+              last_assistant_text: text.slice(0, 2000),
+            });
+          } catch (error) {
+            return JSON.stringify({
+              ok: false,
+              stage: "exception",
+              error: String(error && error.message ? error.message : error),
+            });
+          }
+        })()
+        """
+        try:
+            return self._parse_json_result(self._run_javascript_sync(script, timeout_ms=2000))
+        except Exception as exc:
+            return {
+                "ok": False,
+                "stage": "exception",
+                "error": str(exc),
+            }
+
+    def wait_for_chatgpt_summary_confirmation(
+        self,
+        previous_assistant_count: int,
+        *,
+        timeout_ms: int = 90000,
+    ) -> dict[str, object]:
+        deadline = time.monotonic() + max(1.0, timeout_ms / 1000)
+        last_text = ""
+        while time.monotonic() < deadline:
+            self._qt_sleep(1000)
+            state = self.read_chatgpt_assistant_state()
+            if not state.get("ok"):
+                return state
+
+            assistant_count = int(state.get("assistant_count", 0) or 0)
+            last_text = str(state.get("last_assistant_text", "") or "")
+            normalized = (
+                last_text.lower()
+                .replace("é", "e")
+                .replace("è", "e")
+                .replace("ê", "e")
+                .replace("ç", "c")
+            )
+            received = "resume" in normalized and any(
+                marker in normalized
+                for marker in ("recu", "bien recu", "received", "reception")
+            )
+            if assistant_count > previous_assistant_count and received:
+                return {
+                    "ok": True,
+                    "assistant_count": assistant_count,
+                    "confirmation_text": last_text,
+                }
+
+        return {
+            "ok": False,
+            "stage": "confirmation",
+            "error": "summary receipt confirmation not received",
+            "last_assistant_text": last_text,
+        }
+
+    def _build_chatgpt_bridge_inspect_script(self, text: str, transmission_key: str) -> str:
+        text_json = json.dumps(str(text))
+        key_json = json.dumps(str(transmission_key))
+        return f"""
+        (() => {{
+          try {{
+            {self._web_text_js_helpers(text_json)}
+            const ninoTransmissionKey = {key_json};
+            const normalize = (value) => String(value || "")
+              .replace(/\\u00a0/g, " ")
+              .replace(/\\r\\n/g, "\\n")
+              .trim();
+            const sessionMatch = ninoTransmissionKey.match(/session_id=([^;]+)/);
+            const turnMatch = ninoTransmissionKey.match(/turn_id=([^;]+)/);
+            const sessionId = sessionMatch ? sessionMatch[1] : "";
+            const turnId = turnMatch ? turnMatch[1] : "";
+            const hasTransmissionIdentity = (value) => {{
+              const text = normalize(value);
+              if (text.includes(ninoTransmissionKey)) {{
+                return true;
+              }}
+              return !!sessionId && !!turnId && text.includes(sessionId) && text.includes(turnId);
+            }};
+            const editor = document.querySelector('#prompt-textarea[contenteditable="true"]');
+            const textarea = document.querySelector('textarea[name="prompt-textarea"]');
+            const field = editor || textarea || null;
+            const editorText = field
+              ? normalize(field instanceof HTMLTextAreaElement || field instanceof HTMLInputElement
+                  ? field.value
+                  : (field.innerText || field.textContent || ""))
+              : "";
+            const sendButton = document.querySelector('button[data-testid="send-button"]');
+            const stopButton = document.querySelector('button[data-testid="stop-button"]');
+            const sendAvailable = !!sendButton
+              && ninoVisible(sendButton)
+              && !sendButton.disabled
+              && sendButton.getAttribute("aria-disabled") !== "true";
+            const busy = !!stopButton && ninoVisible(stopButton);
+            const userMessages = Array.from(document.querySelectorAll('[data-message-author-role="user"]'));
+            const matches = userMessages
+              .map((element, index) => {{
+                const text = normalize(element.innerText || element.textContent || "");
+                return {{ index, text }};
+              }})
+              .filter((item) => hasTransmissionIdentity(item.text));
+            const latest = matches.length > 0 ? matches[matches.length - 1] : null;
+            return JSON.stringify({{
+              ok: true,
+              field_found: !!field,
+              editor_text_present: editorText.length > 0,
+              editor_contains_key: hasTransmissionIdentity(editorText),
+              editor_contains_payload: editorText === normalize(ninoText),
+              send_available: sendAvailable,
+              chatgpt_busy: busy || (!!sendButton && !sendAvailable),
+              user_message_found: !!latest,
+              user_message_index: latest ? latest.index : null,
+              user_message_length: latest ? latest.text.length : 0,
+              user_message_count: userMessages.length,
+              key: ninoTransmissionKey,
+            }});
+          }} catch (error) {{
+            return JSON.stringify({{
+              ok: false,
+              stage: "exception",
+              error: String(error && error.message ? error.message : error),
+            }});
+          }}
+        }})()
+        """
+
+    def inspect_chatgpt_bridge_message(self, text: str, transmission_key: str) -> dict[str, object]:
+        if self._page is None or self._web_view is None or not self._state.has_content:
+            return {
+                "ok": False,
+                "stage": "page",
+                "error": "active web page unavailable",
+            }
+
+        current_url = self._state.current_url.strip()
+        if not current_url.startswith("https://chatgpt.com/") and current_url != "https://chatgpt.com":
+            return {
+                "ok": False,
+                "stage": "url",
+                "error": "target URL must start with https://chatgpt.com/",
+            }
+
+        try:
+            return self._parse_json_result(
+                self._run_javascript_sync(
+                    self._build_chatgpt_bridge_inspect_script(text, transmission_key),
+                    timeout_ms=2000,
+                )
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "stage": "exception",
+                "error": str(exc),
+            }
+
+    def _build_chatgpt_bridge_submit_existing_script(self, text: str, transmission_key: str) -> str:
+        text_json = json.dumps(str(text))
+        key_json = json.dumps(str(transmission_key))
+        return f"""
+        (() => {{
+          try {{
+            {self._web_text_js_helpers(text_json)}
+            const ninoTransmissionKey = {key_json};
+            const normalize = (value) => String(value || "")
+              .replace(/\\u00a0/g, " ")
+              .replace(/\\r\\n/g, "\\n")
+              .trim();
+            const sessionMatch = ninoTransmissionKey.match(/session_id=([^;]+)/);
+            const turnMatch = ninoTransmissionKey.match(/turn_id=([^;]+)/);
+            const sessionId = sessionMatch ? sessionMatch[1] : "";
+            const turnId = turnMatch ? turnMatch[1] : "";
+            const hasTransmissionIdentity = (value) => {{
+              const text = normalize(value);
+              if (text.includes(ninoTransmissionKey)) {{
+                return true;
+              }}
+              return !!sessionId && !!turnId && text.includes(sessionId) && text.includes(turnId);
+            }};
+            const editor = document.querySelector('#prompt-textarea[contenteditable="true"]');
+            const textarea = document.querySelector('textarea[name="prompt-textarea"]');
+            const field = editor || textarea || null;
+            if (!field) {{
+              return JSON.stringify({{
+                ok: false,
+                stage: "field",
+                error: "no visible editable field",
+                field_found: false,
+              }});
+            }}
+            const editorText = field instanceof HTMLTextAreaElement || field instanceof HTMLInputElement
+              ? String(field.value || "")
+              : String(field.innerText || field.textContent || "");
+            if (!hasTransmissionIdentity(editorText)) {{
+              return JSON.stringify({{
+                ok: false,
+                stage: "field",
+                error: "existing draft does not match transmission identity",
+                field_found: true,
+              }});
+            }}
+            const resolved = ninoResolveSendButton();
+            if (!resolved.button) {{
+              return JSON.stringify({{
+                ok: false,
+                stage: resolved.stage || "send",
+                error: resolved.error || "send button not found",
+                field_found: true,
+              }});
+            }}
+            if (resolved.button.disabled || resolved.button.getAttribute("aria-disabled") === "true") {{
+              return JSON.stringify({{
+                ok: false,
+                stage: "send",
+                error: "send button disabled",
+                field_found: true,
+              }});
+            }}
+            resolved.button.click();
+            return JSON.stringify({{
+              ok: true,
+              field_found: true,
+              submitted: true,
+            }});
+          }} catch (error) {{
+            return JSON.stringify({{
+              ok: false,
+              stage: "exception",
+              error: String(error && error.message ? error.message : error),
+            }});
+          }}
+        }})()
+        """
+
+    def send_chatgpt_bridge_message(
+        self,
+        text: str,
+        transmission_key: str,
+        *,
+        max_attempts: int = 5,
+        retry_delay_ms: int = 30000,
+    ) -> dict[str, object]:
+        attempts: list[dict[str, object]] = []
+        max_attempts = max(1, int(max_attempts))
+        retry_delay_ms = max(0, int(retry_delay_ms))
+        inserted_during_run = False
+        send_attempted_during_run = False
+
+        for attempt_number in range(1, max_attempts + 1):
+            state = self.inspect_chatgpt_bridge_message(text, transmission_key)
+            attempt: dict[str, object] = {
+                "attempt": attempt_number,
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "field_found": bool(state.get("field_found", False)),
+                "text_present_in_field": bool(state.get("editor_contains_key", False)),
+                "send_available": bool(state.get("send_available", False)),
+                "chatgpt_busy": bool(state.get("chatgpt_busy", False)),
+                "send_action_executed": False,
+                "message_found": bool(state.get("user_message_found", False)),
+                "state": "INSPECTED",
+            }
+
+            if not state.get("ok"):
+                attempt["state"] = "INSPECTION_FAILED"
+                attempt["error"] = str(state.get("error", "inspection failed"))
+                attempts.append(attempt)
+                if attempt_number < max_attempts:
+                    attempt["next_retry_ms"] = retry_delay_ms
+                    self._qt_sleep(retry_delay_ms)
+                    continue
+                return {
+                    "ok": False,
+                    "status": "FAILED_AFTER_5_ATTEMPTS",
+                    "attempts": attempts,
+                    "error": attempt["error"],
+                }
+
+            if state.get("user_message_found") and not state.get("editor_contains_key"):
+                final_status = "SENT_CONFIRMED" if send_attempted_during_run else "DUPLICATE_SKIPPED"
+                attempt["state"] = final_status
+                attempts.append(attempt)
+                return {
+                    "ok": True,
+                    "status": final_status,
+                    "attempts": attempts,
+                    "message_found": True,
+                    "submitted": send_attempted_during_run,
+                }
+
+            editor_has_other_text = bool(state.get("editor_text_present")) and not bool(state.get("editor_contains_key"))
+            if editor_has_other_text:
+                attempt["state"] = "FIELD_CONTAINS_OTHER_TEXT"
+                attempt["error"] = "composer contains unrelated text"
+                attempts.append(attempt)
+                return {
+                    "ok": False,
+                    "status": "FAILED_AFTER_5_ATTEMPTS",
+                    "attempts": attempts,
+                    "error": "composer contains unrelated text",
+                }
+
+            if not state.get("editor_contains_key"):
+                prepare_result = self._parse_json_result(
+                    self._run_javascript_sync(
+                        self._build_web_text_prepare_script(text, one_shot=False),
+                        timeout_ms=2000,
+                    )
+                )
+                if not prepare_result.get("ok"):
+                    attempt["state"] = "DRAFT_INSERT_FAILED"
+                    attempt["error"] = str(prepare_result.get("error", "draft insertion failed"))
+                    attempts.append(attempt)
+                    if attempt_number < max_attempts:
+                        attempt["next_retry_ms"] = retry_delay_ms
+                        self._qt_sleep(retry_delay_ms)
+                        continue
+                    return {
+                        "ok": False,
+                        "status": "FAILED_AFTER_5_ATTEMPTS",
+                        "attempts": attempts,
+                        "error": attempt["error"],
+                    }
+                inserted_during_run = True
+                attempt["state"] = "DRAFT_INSERTED"
+
+            state = self.inspect_chatgpt_bridge_message(text, transmission_key)
+            attempt["field_found"] = bool(state.get("field_found", False))
+            attempt["text_present_in_field"] = bool(state.get("editor_contains_key", False))
+            attempt["send_available"] = bool(state.get("send_available", False))
+            attempt["chatgpt_busy"] = bool(state.get("chatgpt_busy", False))
+            attempt["message_found"] = bool(state.get("user_message_found", False))
+
+            if state.get("user_message_found") and not state.get("editor_contains_key"):
+                attempt["state"] = "SENT_CONFIRMED"
+                attempts.append(attempt)
+                return {
+                    "ok": True,
+                    "status": "SENT_CONFIRMED",
+                    "attempts": attempts,
+                    "message_found": True,
+                    "submitted": send_attempted_during_run,
+                }
+
+            if state.get("send_available"):
+                submit_script = (
+                    self._build_web_text_submit_script(text, one_shot=False)
+                    if state.get("editor_contains_payload")
+                    else self._build_chatgpt_bridge_submit_existing_script(text, transmission_key)
+                )
+                submit_result = self._parse_json_result(
+                    self._run_javascript_sync(
+                        submit_script,
+                        timeout_ms=2000,
+                    )
+                )
+                send_attempted_during_run = bool(submit_result.get("ok"))
+                attempt["send_action_executed"] = send_attempted_during_run
+                attempt["state"] = "SEND_ATTEMPTED" if send_attempted_during_run else "WAITING_CHATGPT_BUSY"
+                if not submit_result.get("ok"):
+                    attempt["error"] = str(submit_result.get("error", "send action failed"))
+            else:
+                attempt["state"] = "WAITING_CHATGPT_BUSY" if state.get("chatgpt_busy") else "DRAFT_INSERTED"
+
+            deadline = time.monotonic() + 6.0
+            while time.monotonic() < deadline:
+                self._qt_sleep(250)
+                confirm_state = self.inspect_chatgpt_bridge_message(text, transmission_key)
+                attempt["message_found"] = bool(confirm_state.get("user_message_found", False))
+                attempt["text_present_in_field"] = bool(confirm_state.get("editor_contains_key", False))
+                attempt["send_available"] = bool(confirm_state.get("send_available", False))
+                attempt["chatgpt_busy"] = bool(confirm_state.get("chatgpt_busy", False))
+                if confirm_state.get("user_message_found") and not confirm_state.get("editor_contains_key"):
+                    attempt["state"] = "SENT_CONFIRMED"
+                    attempts.append(attempt)
+                    return {
+                        "ok": True,
+                        "status": "SENT_CONFIRMED",
+                        "attempts": attempts,
+                        "message_found": True,
+                        "submitted": send_attempted_during_run,
+                    }
+
+            if attempt_number < max_attempts:
+                attempt["next_retry_ms"] = retry_delay_ms
+                attempt["state"] = "RETRY_SCHEDULED"
+                attempts.append(attempt)
+                self._qt_sleep(retry_delay_ms)
+                continue
+
+            attempt["state"] = "FAILED_AFTER_5_ATTEMPTS"
+            attempts.append(attempt)
+            return {
+                "ok": False,
+                "status": "FAILED_AFTER_5_ATTEMPTS",
+                "attempts": attempts,
+                "message_found": False,
+                "submitted": send_attempted_during_run,
+                "draft_inserted": inserted_during_run,
+            }
+
+        return {
+            "ok": False,
+            "status": "FAILED_AFTER_5_ATTEMPTS",
+            "attempts": attempts,
+            "message_found": False,
+            "submitted": send_attempted_during_run,
+            "draft_inserted": inserted_during_run,
+        }
 
     def _web_text_js_helpers(self, text_json: str) -> str:
         return f"""

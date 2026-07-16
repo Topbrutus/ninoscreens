@@ -177,6 +177,31 @@ class AgentCockpitController:
             )
         )
 
+    def transmit_jules_summary(
+        self,
+        *,
+        summary: str = "",
+        source: str = "",
+        source_id: str = "",
+        source_path: str = "",
+        created_at: str = "",
+        sha: str = "",
+    ) -> ActionRecord:
+        return self.execute(
+            AgentCommand(
+                name="transmit_jules_summary",
+                tile_number=1,
+                payload={
+                    "summary": summary,
+                    "source": source,
+                    "source_id": source_id,
+                    "source_path": source_path,
+                    "created_at": created_at,
+                    "sha": sha,
+                },
+            )
+        )
+
     def report_blocked(
         self,
         message: str,
@@ -208,7 +233,14 @@ class AgentCockpitController:
                 details={"reason": "missing_command_name"},
             )
 
-        if normalized_name in {"open_url", "focus_tile", "close_tile", "load_memory", "type_web_text"}:
+        if normalized_name in {
+            "open_url",
+            "focus_tile",
+            "close_tile",
+            "load_memory",
+            "type_web_text",
+            "transmit_jules_summary",
+        }:
             self._validate_tile_number(command.tile_number)
 
         if normalized_name == "report_blocked":
@@ -267,5 +299,7 @@ class AgentCockpitController:
                 return "État complet des carreaux lu."
             case "type_web_text":
                 return f"Texte envoyé dans le carreau {command.tile_number}."
+            case "transmit_jules_summary":
+                return "Résumé Jules transmis dans ChatGPT."
             case _:
                 return f"Commande {command.name} exécutée."
