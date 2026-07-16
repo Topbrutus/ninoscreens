@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 
-from PySide6.QtCore import QTimer, Qt, QUrl, Signal, QSize
+from PySide6.QtCore import QEventLoop, QTimer, Qt, QUrl, Signal, QSize
 from PySide6.QtGui import QColor, QPainter, QPixmap, QIcon
 
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
@@ -67,6 +68,8 @@ class WebTile(QFrame):
     focus_requested = Signal(int)
     grid_requested = Signal(int)
     split_requested = Signal(int)
+    web_page_ready = Signal(object)
+    web_page_released = Signal()
 
     def __init__(self, tile_id: int, profile: QWebEngineProfile, parent=None) -> None:
         super().__init__(parent)
@@ -79,6 +82,10 @@ class WebTile(QFrame):
         self._toolbar_focus_mode = False
         self._split_button_active = False
         self._split_panel_visible = False
+        self._media_probe_installed = False
+        self._media_audio_active = False
+        self._media_video_active = False
+        self._media_last_error = ""
 
         self.setObjectName("TileFrame")
         self.setProperty("focused", False)
@@ -99,6 +106,10 @@ class WebTile(QFrame):
         self.thumbnail_timer.setInterval(THUMBNAIL_CAPTURE_INTERVAL_MS)
         self.thumbnail_timer.timeout.connect(self.capture_thumbnail_if_possible)
         self.thumbnail_timer.start()
+
+        self.media_poll_timer = QTimer(self)
+        self.media_poll_timer.setInterval(900)
+        self.media_poll_timer.timeout.connect(self._poll_media_state)
 
         self._emit_state()
 
@@ -248,6 +259,12 @@ class WebTile(QFrame):
         self.focus_button = QPushButton("⛶")
         self.split_button = QPushButton("⇆")
         self.close_button = QPushButton("✕")
+        self.media_status_label = QLabel("")
+        self.media_status_label.setObjectName("SecondaryText")
+        self.media_status_label.setStyleSheet(
+            "padding: 2px 6px; border: 1px solid #34506f; border-radius: 8px; background: #182433; font-weight: 700;"
+        )
+        self.media_status_label.hide()
 
         for button, tooltip, role in (
             (self.back_button, "Go back", "nav"),
@@ -275,6 +292,7 @@ class WebTile(QFrame):
         header_layout.addWidget(self.zoom_out_button)
         header_layout.addWidget(self.zoom_in_button)
         header_layout.addWidget(self.browser_url_edit, 1)
+        header_layout.addWidget(self.media_status_label)
         header_layout.addWidget(self.memory_button)
         header_layout.addWidget(self.focus_button)
         header_layout.addWidget(self.split_button)
@@ -284,6 +302,12 @@ class WebTile(QFrame):
         self.error_banner.setObjectName("ErrorBanner")
         self.error_banner.setContentsMargins(8, 4, 8, 4)
         self.error_banner.hide()
+
+        self.media_banner = QLabel("")
+        self.media_banner.setObjectName("SecondaryText")
+        self.media_banner.setContentsMargins(8, 0, 8, 6)
+        self.media_banner.setWordWrap(True)
+        self.media_banner.hide()
 
         self._web_view = QWebEngineView()
         self._page = TileWebPage(self.profile, self._web_view)
@@ -310,12 +334,14 @@ class WebTile(QFrame):
 
         container_layout.addWidget(header)
         container_layout.addWidget(self.error_banner)
+        container_layout.addWidget(self.media_banner)
         container_layout.addWidget(self._web_view, 1)
 
         self._browser_container = container
         self.stack.addWidget(container)
         self.set_toolbar_focus_mode(self._toolbar_focus_mode)
         self._apply_navigation_state()
+        self.web_page_ready.emit(self._page)
 
     def _on_focus_button_clicked(self) -> None:
         if self._toolbar_focus_mode:
@@ -335,6 +361,9 @@ class WebTile(QFrame):
 
     def open_url_text(self, raw_text: str) -> None:
         self._navigate_from_text(raw_text)
+
+    def current_page_url(self) -> str:
+        return self._state.current_url.strip()
 
     def reload_current(self) -> None:
         if self._web_view is not None and self._state.has_content:
@@ -409,11 +438,16 @@ class WebTile(QFrame):
 
     def reset_to_empty(self) -> None:
         if self._browser_container is not None:
+            self._stop_media_capture()
+            self.web_page_released.emit()
             self.stack.removeWidget(self._browser_container)
             self._browser_container.deleteLater()
             self._browser_container = None
             self._web_view = None
             self._page = None
+        self._stop_media_probe()
+        self._set_media_status(False, False)
+        self.clear_media_message()
         self.empty_url_edit.clear()
         self.empty_error_label.hide()
         self._state.current_url = ""
@@ -430,7 +464,11 @@ class WebTile(QFrame):
         self._emit_state()
 
     def _on_load_started(self) -> None:
+        self._stop_media_capture()
         self.clear_errors()
+        self._media_probe_installed = False
+        self.clear_media_message()
+        self._set_media_status(False, False)
         self._state.has_content = True
         self._state.is_loading = True
         self._state.status = TileVisualStatus.LOADING
@@ -448,11 +486,14 @@ class WebTile(QFrame):
             self._state.status = TileVisualStatus.READY
             self._state.error_message = ""
             self.clear_errors()
+            self._install_media_probe()
         else:
             self._state.status = TileVisualStatus.ERROR
             self._state.error_message = "The page failed to load."
             self.error_banner.setText(self._state.error_message)
             self.error_banner.show()
+            self._stop_media_capture()
+            self._stop_media_probe()
         self._apply_navigation_state()
         self.queue_thumbnail_capture()
         self._emit_state()
@@ -498,6 +539,225 @@ class WebTile(QFrame):
 
     def _handle_page_fullscreen_request(self, request) -> None:
         request.reject()
+
+    def _stop_media_capture(self, timeout_ms: int = 750) -> None:
+        if self._page is None:
+            return
+
+        loop = QEventLoop()
+        finished = False
+
+        def finish(_result: object | None = None) -> None:
+            nonlocal finished
+            if finished:
+                return
+            finished = True
+            loop.quit()
+
+        try:
+            self._page.runJavaScript(
+                """
+                (() => {
+                  const state = window.__ninoMediaState;
+                  if (state && typeof state.stopAll === "function") {
+                    state.stopAll();
+                  }
+                })();
+                """,
+                finish,
+            )
+        except RuntimeError:
+            return
+
+        QTimer.singleShot(timeout_ms, finish)
+        if not finished:
+            loop.exec()
+
+    def show_media_message(self, message: str) -> None:
+        text = message.strip()
+        if not text:
+            self.clear_media_message()
+            return
+        self.media_banner.setText(text)
+        self.media_banner.show()
+
+    def clear_media_message(self) -> None:
+        if self._browser_container is None:
+            return
+        self.media_banner.clear()
+        self.media_banner.hide()
+
+    def _install_media_probe(self) -> None:
+        if self._page is None:
+            return
+        script = """
+        (() => {
+          if (window.__ninoMediaBridgeInstalled) {
+            return;
+          }
+          window.__ninoMediaBridgeInstalled = true;
+          const state = {
+            audioActive: false,
+            videoActive: false,
+            activeTrackCount: 0,
+            lastErrorName: "",
+            lastErrorMessage: "",
+          };
+          const activeTracks = new Map();
+
+          function syncState() {
+            const tracks = Array.from(activeTracks.values()).filter((track) => track && track.readyState !== "ended");
+            state.activeTrackCount = tracks.length;
+            state.audioActive = tracks.some((track) => track.kind === "audio");
+            state.videoActive = tracks.some((track) => track.kind === "video");
+            window.__ninoMediaState = state;
+          }
+
+          function rememberTrack(track) {
+            if (!track) {
+              return;
+            }
+            const key = `${track.kind}:${track.id}:${Math.random().toString(36).slice(2)}`;
+            activeTracks.set(key, track);
+            if (!track.__ninoWrappedStop) {
+              const originalStop = track.stop.bind(track);
+              track.stop = function() {
+                try {
+                  return originalStop();
+                } finally {
+                  activeTracks.delete(key);
+                  syncState();
+                }
+              };
+              track.__ninoWrappedStop = true;
+            }
+            track.addEventListener("ended", () => {
+              activeTracks.delete(key);
+              syncState();
+            });
+            syncState();
+          }
+
+          function rememberStream(stream) {
+            for (const track of stream.getTracks()) {
+              rememberTrack(track);
+            }
+            syncState();
+            return stream;
+          }
+
+          if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+            const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+            navigator.mediaDevices.getUserMedia = async function(constraints) {
+              try {
+                const stream = await originalGetUserMedia(constraints);
+                state.lastErrorName = "";
+                state.lastErrorMessage = "";
+                return rememberStream(stream);
+              } catch (error) {
+                state.lastErrorName = error && error.name ? String(error.name) : "Error";
+                state.lastErrorMessage = error && error.message ? String(error.message) : "media error";
+                syncState();
+                throw error;
+              }
+            };
+          }
+
+          state.stopAll = () => {
+            for (const track of Array.from(activeTracks.values())) {
+              try {
+                track.stop();
+              } catch (_error) {
+              }
+            }
+            activeTracks.clear();
+            syncState();
+          };
+
+          window.__ninoMediaState = state;
+          syncState();
+        })();
+        """
+        self._page.runJavaScript(script)
+        self._media_probe_installed = True
+        if not self.media_poll_timer.isActive():
+            self.media_poll_timer.start()
+
+    def _stop_media_probe(self) -> None:
+        self.media_poll_timer.stop()
+        self._media_probe_installed = False
+
+    def _poll_media_state(self) -> None:
+        if self._page is None or not self._state.has_content:
+            return
+        self._page.runJavaScript(
+            "window.__ninoMediaState ? JSON.stringify(window.__ninoMediaState) : ''",
+            self._apply_polled_media_state,
+        )
+
+    def _apply_polled_media_state(self, raw_value: object) -> None:
+        if not raw_value:
+            return
+        try:
+            payload = json.loads(str(raw_value))
+        except json.JSONDecodeError:
+            return
+
+        audio_active = bool(payload.get("audioActive"))
+        video_active = bool(payload.get("videoActive"))
+        self._set_media_status(audio_active, video_active)
+
+        error_name = str(payload.get("lastErrorName", "") or "").strip()
+        error_message = str(payload.get("lastErrorMessage", "") or "").strip()
+        if error_name or error_message:
+            normalized_error = self._classify_media_error(error_name, error_message)
+            if normalized_error != self._media_last_error:
+                self._media_last_error = normalized_error
+                self.show_media_message(normalized_error)
+        elif self._media_last_error and not audio_active and not video_active:
+            self._media_last_error = ""
+            self.clear_media_message()
+
+    def _set_media_status(self, audio_active: bool, video_active: bool) -> None:
+        self._media_audio_active = audio_active
+        self._media_video_active = video_active
+        if audio_active and video_active:
+            text = "🎤 📷"
+            tooltip = "Microphone et caméra actifs"
+        elif audio_active:
+            text = "🎤"
+            tooltip = "Microphone actif"
+        elif video_active:
+            text = "📷"
+            tooltip = "Caméra active"
+        else:
+            text = ""
+            tooltip = ""
+
+        if self._browser_container is None:
+            return
+        self.media_status_label.setText(text)
+        self.media_status_label.setToolTip(tooltip)
+        self.media_status_label.setVisible(bool(text))
+
+    def _classify_media_error(self, error_name: str, error_message: str) -> str:
+        if error_name == "NotAllowedError":
+            return (
+                "Accès média accordé par Nino mais bloqué par Windows, par le navigateur ou refusé par la page."
+            )
+        if error_name == "NotFoundError":
+            return "Aucun microphone ou aucune caméra compatible n’a été détecté."
+        if error_name in {"NotReadableError", "TrackStartError"}:
+            return "Le périphérique média est déjà utilisé, indisponible ou débranché."
+        if error_name == "AbortError":
+            return "La demande média a été annulée avant l’ouverture du périphérique."
+        if error_name == "SecurityError":
+            return "L’accès média a été bloqué pour des raisons de sécurité."
+        if error_name:
+            return f"Erreur média {error_name}: {error_message or 'échec de l’accès au périphérique.'}"
+        if error_message:
+            return f"Erreur média: {error_message}"
+        return "Erreur média inconnue."
 
     def queue_thumbnail_capture(self) -> None:
         QTimer.singleShot(THUMBNAIL_CAPTURE_DELAY_MS, self.capture_thumbnail_if_possible)

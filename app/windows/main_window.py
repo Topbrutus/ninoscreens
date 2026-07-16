@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QCoreApplication, QEvent, QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QFrame,
@@ -33,6 +33,7 @@ from app.config import (
 from app.session_store import load_session_payload, save_session_payload, serialize_app_state
 from app.state import AppState, TileState
 from app.terminal import TerminalRuntime
+from app.web_media import WebMediaPermissionController
 from app.web_profile import build_shared_profile
 from app.widgets.dashboard_grid import DashboardGrid
 from app.widgets.focus_view import FocusView
@@ -65,6 +66,8 @@ class MainWindow(QMainWindow):
             self.app_state.tiles = [TileState(tile_id=i) for i in range(TILE_COUNT)]
 
         self.profile = build_shared_profile(self)
+        self.web_media_controller = WebMediaPermissionController(self.profile, self)
+        self.web_media_controller.set_test_page_opener(self.open_media_test_page)
 
         self.tiles: dict[int, WebTile] = {}
         self.page_grids: list[DashboardGrid] = []
@@ -141,7 +144,12 @@ class MainWindow(QMainWindow):
         self.fullscreen_button.setProperty("compact", True)
         self.fullscreen_button.clicked.connect(self.toggle_global_fullscreen)
 
+        self.media_permissions_button = QPushButton("Media")
+        self.media_permissions_button.setProperty("compact", True)
+        self.media_permissions_button.clicked.connect(self.open_media_permissions_panel)
+
         controls_row1.addWidget(self.pages_button)
+        controls_row1.addWidget(self.media_permissions_button)
         controls_row2.addWidget(self.focus_exit_button)
         controls_layout.addLayout(controls_row1)
         controls_layout.addLayout(controls_row2)
@@ -191,6 +199,7 @@ class MainWindow(QMainWindow):
             tile.focus_requested.connect(self.enter_focus_mode)
             tile.grid_requested.connect(self.exit_focus_mode)
             tile.split_requested.connect(self.toggle_split_panel_for_focused_tile)
+            self.web_media_controller.attach_tile(tile)
             self.tiles[tile_id] = tile
 
             page_index = self._tile_page_index(tile_id)
@@ -240,6 +249,17 @@ class MainWindow(QMainWindow):
 
     def show_run_page(self) -> None:
         self.show_terminal_page()
+
+    def open_media_permissions_panel(self) -> None:
+        self.web_media_controller.open_permissions_panel()
+
+    def open_media_test_page(self, url: str) -> None:
+        target_tile_id = self._focused_tile_id if self._focused_tile_id is not None else self._last_selected_tile_id
+        if target_tile_id not in self.tiles:
+            target_tile_id = 0
+        self._show_page_for_tile(target_tile_id)
+        self.tiles[target_tile_id].open_url_text(url)
+        self._refresh_top_state()
 
     def return_from_terminal_page(self) -> None:
         self.terminal_workspace.refresh_runtime_status()
@@ -752,5 +772,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.terminal_workspace.shutdown()
+        self.web_media_controller.shutdown()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         self._save_session()
         super().closeEvent(event)
