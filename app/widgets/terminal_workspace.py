@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QStackedLayout,
@@ -29,6 +30,11 @@ class TerminalWorkspace(QFrame):
         super().__init__(parent)
         self.runtime = runtime
         self._terminal_loaded = False
+        self._web_ready = False
+        self._pending_session_id: str | None = None
+        self._selected_session_id: str | None = None
+        self._auto_create_initial_session = True
+        self._syncing_tabs = False
         self.setObjectName("ControlPanel")
 
         root = QVBoxLayout(self)
@@ -75,16 +81,19 @@ class TerminalWorkspace(QFrame):
         self.tab_bar.setDrawBase(False)
         self.tab_bar.setExpanding(False)
         self.tab_bar.setMovable(False)
-        self.tab_bar.setTabsClosable(False)
+        self.tab_bar.setTabsClosable(True)
         self.tab_bar.setUsesScrollButtons(True)
         self.tab_bar.setElideMode(Qt.TextElideMode.ElideRight)
         self.tab_bar.setMinimumHeight(32)
         self.tab_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.tab_bar.currentChanged.connect(self._on_tab_changed)
+        self.tab_bar.tabCloseRequested.connect(self.close_tab_at)
 
         self.add_tab_button = QPushButton("+")
         self.add_tab_button.setProperty("compact", True)
         self.add_tab_button.setEnabled(False)
-        self.add_tab_button.setToolTip("L’ajout d’onglets sera activé en phase suivante")
+        self.add_tab_button.setToolTip("Ouvrir un nouvel onglet PowerShell")
+        self.add_tab_button.clicked.connect(self.open_new_tab)
 
         self.copy_button = QPushButton("Copier")
         self.copy_button.setProperty("compact", True)
@@ -110,19 +119,16 @@ class TerminalWorkspace(QFrame):
         placeholder_layout.setContentsMargins(20, 20, 20, 20)
         placeholder_layout.setSpacing(10)
 
-        placeholder_title = QLabel("Zone réservée au futur terminal")
-        placeholder_title.setStyleSheet("font-size: 16px; font-weight: 600;")
+        self.placeholder_title = QLabel("Terminal inactif")
+        self.placeholder_title.setStyleSheet("font-size: 16px; font-weight: 600;")
 
-        placeholder_body = QLabel(
-            "Aucun terminal réel n’est lancé à cette étape.\n"
-            "Cette zone est uniquement un emplacement réservé pour la phase suivante."
-        )
-        placeholder_body.setWordWrap(True)
-        placeholder_body.setObjectName("MutedText")
-        placeholder_body.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.placeholder_body = QLabel("")
+        self.placeholder_body.setWordWrap(True)
+        self.placeholder_body.setObjectName("MutedText")
+        self.placeholder_body.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
-        placeholder_layout.addWidget(placeholder_title)
-        placeholder_layout.addWidget(placeholder_body)
+        placeholder_layout.addWidget(self.placeholder_title)
+        placeholder_layout.addWidget(self.placeholder_body)
         placeholder_layout.addStretch(1)
 
         self.web_view = QWebEngineView()
@@ -131,6 +137,7 @@ class TerminalWorkspace(QFrame):
         settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
         settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanAccessClipboard, False)
         settings.setAttribute(QWebEngineSettings.WebAttribute.FullScreenSupportEnabled, False)
+        self.web_view.loadFinished.connect(self._on_terminal_page_loaded)
 
         self.view_stack.addWidget(self.placeholder_frame)
         self.view_stack.addWidget(self.web_view)
@@ -145,38 +152,125 @@ class TerminalWorkspace(QFrame):
         root.addWidget(tabs_frame)
         root.addLayout(self.view_stack, 1)
 
+        self._show_empty_state(
+            "Aucun onglet Terminal ouvert",
+            "Cliquez sur + pour créer une nouvelle session PowerShell locale.",
+        )
+
     def activate(self) -> bool:
         try:
-            info = self.runtime.ensure_started()
+            service_info = self.runtime.ensure_started()
         except TerminalRuntimeError as exc:
             self.status_label.setText(f"MODE MANUEL • Échec du terminal local: {exc}")
-            self.view_stack.setCurrentWidget(self.placeholder_frame)
+            self._show_empty_state(
+                "Terminal indisponible",
+                "Le service local n’a pas démarré. Aucun onglet n’est accessible.",
+            )
             return False
 
-        self.status_label.setText(
-            f"MODE MANUEL • {info['host']}:{info['port']} • PID {info['pid']} • {info['cwd']}"
-        )
+        self.add_tab_button.setEnabled(True)
         if not self._terminal_loaded:
-            self._load_terminal_page(info["ws_url"])
+            self._load_terminal_page(service_info["ws_url"])
             self._terminal_loaded = True
+
+        sessions = self.runtime.list_sessions()
+        if not sessions and self._auto_create_initial_session:
+            created = self.runtime.create_session()
+            sessions = [created]
+            self._auto_create_initial_session = False
+
+        preferred_session_id = self._selected_session_id
+        if preferred_session_id is None and sessions:
+            preferred_session_id = sessions[0]["session_id"]
+        self._sync_tabs_from_sessions(sessions, preferred_session_id)
+        self._refresh_status()
+
+        if self._selected_session_id is None:
+            self._show_empty_state(
+                "Aucun onglet Terminal ouvert",
+                "Le service local reste actif. Utilisez + pour créer une nouvelle session PowerShell.",
+            )
+            return True
+
         self.view_stack.setCurrentWidget(self.web_view)
+        self._attach_selected_session()
         self.web_view.setFocus(Qt.FocusReason.OtherFocusReason)
         return True
 
     def refresh_runtime_status(self) -> None:
-        info = self.runtime.snapshot()
-        if info.get("alive"):
-            self.status_label.setText(
-                f"MODE MANUEL • {info['host']}:{info['port']} • PID {info['pid']} • {info['cwd']}"
-            )
-        else:
-            self.status_label.setText("Service terminal local arrêté.")
+        try:
+            sessions = self.runtime.list_sessions()
+        except TerminalRuntimeError:
+            sessions = []
+        self._sync_tabs_from_sessions(sessions, self._selected_session_id)
+        self._refresh_status()
 
     def shutdown(self) -> None:
         self.runtime.shutdown()
         self._terminal_loaded = False
-        self.view_stack.setCurrentWidget(self.placeholder_frame)
+        self._web_ready = False
+        self._pending_session_id = None
+        self._selected_session_id = None
+        self._sync_tabs_from_sessions([], None)
+        self._show_empty_state(
+            "Terminal arrêté",
+            "Le service terminal local est arrêté.",
+        )
         self.status_label.setText("Service terminal local arrêté.")
+
+    def open_new_tab(self) -> None:
+        try:
+            session = self.runtime.create_session()
+        except TerminalRuntimeError as exc:
+            self.status_label.setText(f"MODE MANUEL • Création d’onglet impossible: {exc}")
+            return
+
+        self._auto_create_initial_session = False
+        self._sync_tabs_from_sessions(self.runtime.list_sessions(), session["session_id"])
+        self.view_stack.setCurrentWidget(self.web_view)
+        self._attach_selected_session()
+        self._refresh_status()
+
+    def close_tab_at(self, index: int) -> None:
+        session_id = self._tab_session_id(index)
+        if not session_id:
+            return
+
+        session = self.runtime.session_snapshot(session_id)
+        if session and session.get("alive"):
+            result = QMessageBox.question(
+                self,
+                "Fermer l’onglet Terminal",
+                f"{session['display_name']} est encore actif (PID {session['pid']}). Fermer cette session ?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if result != QMessageBox.StandardButton.Yes:
+                return
+
+        try:
+            self.runtime.close_session(session_id)
+        except TerminalRuntimeError as exc:
+            self.status_label.setText(f"MODE MANUEL • Fermeture impossible: {exc}")
+            return
+
+        sessions = self.runtime.list_sessions()
+        next_session_id = None
+        if sessions:
+            fallback_index = min(index, len(sessions) - 1)
+            next_session_id = sessions[fallback_index]["session_id"]
+        self._sync_tabs_from_sessions(sessions, next_session_id)
+        self._refresh_status()
+
+        if self._selected_session_id is None:
+            self._show_empty_state(
+                "Aucun onglet Terminal ouvert",
+                "La dernière session a été fermée. Cliquez sur + pour en créer une nouvelle.",
+            )
+            return
+
+        self.view_stack.setCurrentWidget(self.web_view)
+        self._attach_selected_session()
 
     def copy_selection(self) -> None:
         self.web_view.page().runJavaScript("window.ninoTerminalApi?.getSelection?.() ?? ''", self._store_selection)
@@ -204,6 +298,18 @@ class TerminalWorkspace(QFrame):
     def fit_terminal(self) -> None:
         self.web_view.page().runJavaScript("window.ninoTerminalApi?.fitNow?.();")
 
+    def current_session_id(self) -> str | None:
+        return self._selected_session_id
+
+    def current_session_snapshot(self) -> dict | None:
+        session_id = self._selected_session_id
+        if not session_id:
+            return None
+        return self.runtime.session_snapshot(session_id)
+
+    def list_session_snapshots(self) -> list[dict]:
+        return self.runtime.list_sessions()
+
     def _store_selection(self, value: object) -> None:
         text = str(value or "")
         if not text:
@@ -217,3 +323,114 @@ class TerminalWorkspace(QFrame):
         query.addQueryItem("ws", ws_url)
         url.setQuery(query)
         self.web_view.setUrl(url)
+
+    def _on_terminal_page_loaded(self, ok: bool) -> None:
+        self._web_ready = ok
+        if ok:
+            self._attach_selected_session()
+
+    def _on_tab_changed(self, index: int) -> None:
+        if self._syncing_tabs:
+            return
+
+        session_id = self._tab_session_id(index)
+        if session_id == self._selected_session_id:
+            self._refresh_status()
+            return
+
+        self._selected_session_id = session_id
+        self._refresh_status()
+        if session_id is None:
+            self._show_empty_state(
+                "Aucun onglet Terminal ouvert",
+                "Cliquez sur + pour créer une nouvelle session PowerShell locale.",
+            )
+            return
+
+        self.view_stack.setCurrentWidget(self.web_view)
+        self._attach_selected_session()
+
+    def _tab_session_id(self, index: int) -> str | None:
+        if index < 0 or index >= self.tab_bar.count():
+            return None
+        value = self.tab_bar.tabData(index)
+        text = str(value or "").strip()
+        return text or None
+
+    def _sync_tabs_from_sessions(self, sessions: list[dict], preferred_session_id: str | None) -> None:
+        self._syncing_tabs = True
+        try:
+            while self.tab_bar.count() > 0:
+                self.tab_bar.removeTab(0)
+            for session in sessions:
+                label = str(session.get("display_name") or session["session_id"])
+                index = self.tab_bar.addTab(label)
+                self.tab_bar.setTabData(index, session["session_id"])
+                self.tab_bar.setTabToolTip(
+                    index,
+                    f"{label} • PID {session.get('pid') or '?'} • {session.get('state', 'unknown')}",
+                )
+            selected_session_id = preferred_session_id
+            if selected_session_id is None and sessions:
+                selected_session_id = sessions[0]["session_id"]
+            selected_index = self._find_tab_index(selected_session_id)
+            if selected_index < 0 and sessions:
+                selected_index = 0
+                selected_session_id = sessions[0]["session_id"]
+            self._selected_session_id = selected_session_id if selected_index >= 0 else None
+            if selected_index >= 0:
+                self.tab_bar.setCurrentIndex(selected_index)
+            else:
+                self.tab_bar.setCurrentIndex(-1)
+        finally:
+            self._syncing_tabs = False
+
+    def _find_tab_index(self, session_id: str | None) -> int:
+        if not session_id:
+            return -1
+        for index in range(self.tab_bar.count()):
+            if self._tab_session_id(index) == session_id:
+                return index
+        return -1
+
+    def _attach_selected_session(self) -> None:
+        session_id = self._selected_session_id
+        if not session_id:
+            return
+        self._pending_session_id = session_id
+        if not self._web_ready:
+            return
+        self.web_view.page().runJavaScript(
+            f"window.ninoTerminalApi?.attachSession?.({json.dumps(session_id)});"
+        )
+        self.web_view.page().runJavaScript("window.ninoTerminalApi?.fitNow?.();")
+        self._pending_session_id = None
+
+    def _refresh_status(self) -> None:
+        service_info = self.runtime.snapshot()
+        session_id = self._selected_session_id
+        if not service_info.get("ready"):
+            self.status_label.setText("Service terminal local arrêté.")
+            return
+
+        if session_id is None:
+            self.status_label.setText(
+                f"MODE MANUEL • {service_info['host']}:{service_info['port']} • aucun onglet • {service_info['session_count']} session(s)"
+            )
+            return
+
+        session = self.runtime.session_snapshot(session_id)
+        if not session:
+            self.status_label.setText(
+                f"MODE MANUEL • {service_info['host']}:{service_info['port']} • session indisponible"
+            )
+            return
+
+        self.status_label.setText(
+            f"MODE MANUEL • {service_info['host']}:{service_info['port']} • {session['display_name']} • PID {session['pid']} • {session['cwd']}"
+        )
+
+    def _show_empty_state(self, title: str, body: str) -> None:
+        self.placeholder_title.setText(title)
+        self.placeholder_body.setText(body)
+        self.view_stack.setCurrentWidget(self.placeholder_frame)

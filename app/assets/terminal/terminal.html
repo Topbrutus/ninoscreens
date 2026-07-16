@@ -114,6 +114,10 @@
 
       let socket = null;
       let reconnectTimer = null;
+      let currentSessionId = null;
+      let lastMetaText = "Connecté";
+      let inputEnabled = false;
+      let replayingSnapshot = false;
 
       function setState(text) {
         stateText.textContent = text;
@@ -139,7 +143,43 @@
 
       function fitAndResize() {
         fitAddon.fit();
-        sendPayload({ type: "resize", cols: term.cols, rows: term.rows });
+        if (currentSessionId) {
+          sendPayload({
+            type: "resize",
+            session_id: currentSessionId,
+            cols: term.cols,
+            rows: term.rows,
+          });
+        }
+      }
+
+      function attachSession(sessionId) {
+        currentSessionId = sessionId || null;
+        inputEnabled = false;
+        replayingSnapshot = false;
+        if (!currentSessionId) {
+          term.reset();
+          setState("Aucun onglet actif");
+          return false;
+        }
+        setState(`Chargement ${currentSessionId}…`);
+        term.reset();
+        const attached = sendPayload({
+          type: "attach_session",
+          session_id: currentSessionId,
+        });
+        if (attached) {
+          fitAndResize();
+        }
+        return attached;
+      }
+
+      function enableInputAfterRestore() {
+        window.setTimeout(() => {
+          inputEnabled = Boolean(currentSessionId);
+          fitAndResize();
+          term.focus();
+        }, 60);
       }
 
       function connect() {
@@ -149,6 +189,11 @@
         socket.addEventListener("open", () => {
           setState("Connecté");
           fitAndResize();
+          if (currentSessionId) {
+            attachSession(currentSessionId);
+          } else {
+            sendPayload({ type: "list_sessions" });
+          }
           term.focus();
         });
 
@@ -162,18 +207,48 @@
           if (!payload || !payload.type) {
             return;
           }
+
           if (payload.type === "snapshot") {
-            term.reset();
-            if (payload.data) {
-              term.write(payload.data);
+            if (payload.session_id && currentSessionId && payload.session_id !== currentSessionId) {
+              return;
             }
-            fitAndResize();
+            inputEnabled = false;
+            replayingSnapshot = true;
+            term.reset();
+            const snapshotData = payload.data || "";
+            if (snapshotData) {
+              term.write(snapshotData, () => {
+                replayingSnapshot = false;
+                enableInputAfterRestore();
+              });
+            } else {
+              replayingSnapshot = false;
+              enableInputAfterRestore();
+            }
           } else if (payload.type === "output") {
+            if (payload.session_id && currentSessionId && payload.session_id !== currentSessionId) {
+              return;
+            }
             term.write(payload.data || "");
           } else if (payload.type === "meta") {
-            setState(`Connecté • PID ${payload.pid ?? "?"}`);
+            if (payload.session_id && currentSessionId && payload.session_id !== currentSessionId) {
+              return;
+            }
+            const name = payload.display_name || currentSessionId || "Session";
+            lastMetaText = `Connecté • ${name} • PID ${payload.pid ?? "?"}`;
+            setState(lastMetaText);
+          } else if (payload.type === "session_closed") {
+            if (payload.session_id && payload.session_id === currentSessionId) {
+              currentSessionId = null;
+              inputEnabled = false;
+              replayingSnapshot = false;
+              term.reset();
+              setState("Session fermée");
+            }
           } else if (payload.type === "pong") {
-            setState("Connecté");
+            setState(lastMetaText);
+          } else if (payload.type === "error") {
+            setState(payload.message || "Erreur terminal");
           }
         });
 
@@ -191,12 +266,17 @@
       }
 
       term.onData((data) => {
-        sendPayload({ type: "input", data });
+        if (!currentSessionId || !inputEnabled || replayingSnapshot) {
+          return;
+        }
+        sendPayload({ type: "input", session_id: currentSessionId, data });
       });
 
       term.attachCustomKeyEventHandler((event) => {
         if (event.type === "keydown" && event.ctrlKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "c" && !term.hasSelection()) {
-          sendPayload({ type: "interrupt" });
+          if (currentSessionId) {
+            sendPayload({ type: "interrupt", session_id: currentSessionId });
+          }
           return false;
         }
         return true;
@@ -209,18 +289,28 @@
       window.addEventListener("resize", fitAndResize);
 
       window.ninoTerminalApi = {
+        attachSession,
         dumpText: currentBufferText,
         geometry() {
           return { cols: term.cols, rows: term.rows };
         },
         sendLine(text) {
-          sendPayload({ type: "input", data: `${text}\r` });
+          if (!currentSessionId || !inputEnabled || replayingSnapshot) {
+            return false;
+          }
+          return sendPayload({ type: "input", session_id: currentSessionId, data: `${text}\r` });
         },
         sendText(text) {
-          sendPayload({ type: "input", data: text });
+          if (!currentSessionId || !inputEnabled || replayingSnapshot) {
+            return false;
+          }
+          return sendPayload({ type: "input", session_id: currentSessionId, data: text });
         },
         sendInterrupt() {
-          sendPayload({ type: "interrupt" });
+          if (!currentSessionId || !inputEnabled || replayingSnapshot) {
+            return false;
+          }
+          return sendPayload({ type: "interrupt", session_id: currentSessionId });
         },
         fitNow() {
           fitAndResize();
@@ -233,7 +323,13 @@
           return term.hasSelection();
         },
         pasteText(text) {
-          sendPayload({ type: "input", data: text });
+          if (!currentSessionId || !inputEnabled || replayingSnapshot) {
+            return false;
+          }
+          return sendPayload({ type: "input", session_id: currentSessionId, data: text });
+        },
+        isInputReady() {
+          return Boolean(currentSessionId && inputEnabled && !replayingSnapshot);
         },
       };
 
