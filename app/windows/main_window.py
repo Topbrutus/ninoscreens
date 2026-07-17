@@ -866,6 +866,7 @@ class MainWindow(QMainWindow):
         self.app_state.active_view = "run"
         if self._focused_tile_id is None:
             self._show_active_workspace()
+        self.terminal_workspace.request_terminal_focus()
         self._refresh_top_state()
         self.schedule_session_save()
 

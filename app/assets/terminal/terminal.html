@@ -315,6 +315,10 @@
         fitNow() {
           fitAndResize();
         },
+        focusInput() {
+          term.focus();
+          return true;
+        },
         getSelection() {
           return term.getSelection();
         },

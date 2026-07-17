@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal, QUrl, QUrlQuery
+from PySide6.QtCore import Qt, QTimer, Signal, QUrl, QUrlQuery
 from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWebEngineCore import QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -35,6 +35,9 @@ class TerminalWorkspace(QFrame):
         self._selected_session_id: str | None = None
         self._auto_create_initial_session = True
         self._syncing_tabs = False
+        self._focus_timer = QTimer(self)
+        self._focus_timer.setSingleShot(True)
+        self._focus_timer.timeout.connect(self._apply_terminal_focus)
         self.setObjectName("ControlPanel")
 
         root = QVBoxLayout(self)
@@ -194,7 +197,7 @@ class TerminalWorkspace(QFrame):
 
         self.view_stack.setCurrentWidget(self.web_view)
         self._attach_selected_session()
-        self.web_view.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.request_terminal_focus()
         return True
 
     def refresh_runtime_status(self) -> None:
@@ -230,6 +233,7 @@ class TerminalWorkspace(QFrame):
         self.view_stack.setCurrentWidget(self.web_view)
         self._attach_selected_session()
         self._refresh_status()
+        self.request_terminal_focus()
 
     def close_tab_at(self, index: int) -> None:
         session_id = self._tab_session_id(index)
@@ -271,6 +275,7 @@ class TerminalWorkspace(QFrame):
 
         self.view_stack.setCurrentWidget(self.web_view)
         self._attach_selected_session()
+        self.request_terminal_focus()
 
     def copy_selection(self) -> None:
         self.web_view.page().runJavaScript("window.ninoTerminalApi?.getSelection?.() ?? ''", self._store_selection)
@@ -297,6 +302,9 @@ class TerminalWorkspace(QFrame):
 
     def fit_terminal(self) -> None:
         self.web_view.page().runJavaScript("window.ninoTerminalApi?.fitNow?.();")
+
+    def request_terminal_focus(self) -> None:
+        self._focus_timer.start(0)
 
     def current_session_id(self) -> str | None:
         return self._selected_session_id
@@ -328,6 +336,7 @@ class TerminalWorkspace(QFrame):
         self._web_ready = ok
         if ok:
             self._attach_selected_session()
+            self.request_terminal_focus()
 
     def _on_tab_changed(self, index: int) -> None:
         if self._syncing_tabs:
@@ -349,6 +358,7 @@ class TerminalWorkspace(QFrame):
 
         self.view_stack.setCurrentWidget(self.web_view)
         self._attach_selected_session()
+        self.request_terminal_focus()
 
     def _tab_session_id(self, index: int) -> str | None:
         if index < 0 or index >= self.tab_bar.count():
@@ -405,6 +415,12 @@ class TerminalWorkspace(QFrame):
         )
         self.web_view.page().runJavaScript("window.ninoTerminalApi?.fitNow?.();")
         self._pending_session_id = None
+
+    def _apply_terminal_focus(self) -> None:
+        if self.view_stack.currentWidget() is not self.web_view:
+            self.view_stack.setCurrentWidget(self.web_view)
+        self.web_view.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.web_view.page().runJavaScript("window.ninoTerminalApi?.focusInput?.();")
 
     def _refresh_status(self) -> None:
         service_info = self.runtime.snapshot()
