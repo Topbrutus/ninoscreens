@@ -105,6 +105,8 @@ class MainWindow(QMainWindow):
         self.page_grids: list[DashboardGrid] = []
         self.terminal_runtime = TerminalRuntime(start_dir=Path(__file__).resolve().parents[2])
         self.arena_controller = ArenaController()
+        self.arena_controller.snapshot_signals.snapshot_ready.connect(self._on_arena_snapshot_ready)
+        self.arena_controller.snapshot_signals.snapshot_failed.connect(self._on_arena_snapshot_failed)
         self._focused_tile_id: int | None = None
         self._split_tile_id: int | None = None
         self._split_pairs: dict[int, int] = {}
@@ -841,6 +843,9 @@ class MainWindow(QMainWindow):
         if 0 <= state_object.tile_id < len(self.app_state.tiles):
             self.app_state.tiles[state_object.tile_id] = state_object
 
+        if self._restoring_session:
+            return
+
         self.focus_view.refresh_slots(self.app_state.tiles, self._focused_tile_id)
         slot_states = self._slot_states()
         self.page_matrix.set_split_pairs(self._slot_split_pairs(), slot_states)
@@ -868,12 +873,16 @@ class MainWindow(QMainWindow):
             self._show_active_workspace()
         else:
             self.page_stack.setCurrentIndex(self.app_state.current_page_index)
+        if self._restoring_session:
+            return
         self._refresh_top_state()
         self.schedule_session_save()
 
     def show_arena_page(self) -> None:
         self.app_state.active_view = "arena"
         self.main_stack.setCurrentWidget(self.arena_workspace)
+        if self._restoring_session:
+            return
         self.arena_workspace.refresh_view()
         self._refresh_top_state()
         self.schedule_session_save()
@@ -881,6 +890,8 @@ class MainWindow(QMainWindow):
     def show_pages_bridge_page(self) -> None:
         self.app_state.active_view = "pages"
         self.main_stack.setCurrentWidget(self.pages_workspace)
+        if self._restoring_session:
+            return
         self.pages_workspace.refresh_view()
         self._refresh_top_state()
         self.schedule_session_save()
@@ -1410,11 +1421,11 @@ class MainWindow(QMainWindow):
             button.setProperty("active", active)
             button.style().unpolish(button)
             button.style().polish(button)
-        arena_snapshot = None
-        try:
-            arena_snapshot = self.arena_controller.snapshot()
-        except Exception:
-            arena_snapshot = None
+
+        arena_snapshot = self.arena_controller.cached_snapshot()
+        if arena_snapshot is None and not self._restoring_session:
+            self.arena_controller.request_snapshot_refresh()
+
         if arena_snapshot is not None:
             arena_state = str(arena_snapshot.get("arena_state", "ARENA_OFFLINE"))
             self.arena_button.setProperty("arenaState", arena_state)
@@ -1422,6 +1433,8 @@ class MainWindow(QMainWindow):
             self.arena_button.style().unpolish(self.arena_button)
             self.arena_button.style().polish(self.arena_button)
         self.focus_exit_button.setEnabled(self._focused_tile_id is not None)
+        if self.main_stack.currentWidget() is self.arena_workspace and arena_snapshot is not None:
+            self.arena_workspace._apply_snapshot(arena_snapshot)
 
     def _on_split_visibility_changed(self, visible: bool) -> None:
         self.app_state.split_panel_visible = visible and self._focused_tile_id is not None
@@ -1448,6 +1461,8 @@ class MainWindow(QMainWindow):
 
     def on_tile_state_changed(self, state_object: object) -> None:
         self._handle_tile_state_changed(state_object)
+        if self._restoring_session:
+            return
         if isinstance(state_object, TileState):
             self._clear_split_if_tile_became_empty(state_object)
         self._sync_focus_flags()
@@ -1456,91 +1471,116 @@ class MainWindow(QMainWindow):
 
     def _restore_session(self) -> None:
         payload = load_session_payload()
-        if not payload:
-            self._show_active_workspace()
-            self._restoring_session = False
-            return
-
-        window_payload = payload.get("window")
-        if isinstance(window_payload, dict):
-            width = _clamp_int(window_payload.get("width"), MINIMUM_WINDOW_SIZE.width(), 10000, DEFAULT_WINDOW_SIZE.width())
-            height = _clamp_int(window_payload.get("height"), MINIMUM_WINDOW_SIZE.height(), 10000, DEFAULT_WINDOW_SIZE.height())
-            self.resize(width, height)
-            self.app_state.window_size = self.size()
-
-        tiles_payload = payload.get("tiles")
-        if isinstance(tiles_payload, list):
-            for tile_payload in tiles_payload:
-                if not isinstance(tile_payload, dict):
-                    continue
-                tile_id = _clamp_int(tile_payload.get("tile_id"), 0, TILE_COUNT - 1, -1)
-                if tile_id not in self.tiles:
-                    continue
-                current_url = str(tile_payload.get("current_url", "") or "")
-                try:
-                    zoom_factor = float(tile_payload.get("zoom_factor", 1.0))
-                except (TypeError, ValueError):
-                    zoom_factor = 1.0
-                self.tiles[tile_id].restore_from_session(current_url=current_url, zoom_factor=zoom_factor)
-
-        self._apply_slot_order(self._tile_positions_from_payload(payload))
-        self._rebuild_tile_layout()
-
-        self._last_selected_tile_id = _clamp_int(
-            payload.get("last_selected_tile_id"),
-            0,
-            TILE_COUNT - 1,
-            0,
-        )
-        self.app_state.last_selected_tile_id = self._last_selected_tile_id
-        self.app_state.current_page_index = _clamp_int(
-            payload.get("current_page_index"),
-            0,
-            PAGE_COUNT - 1,
-            0,
-        )
-        active_view = str(payload.get("active_view", "tiles") or "tiles")
-        self.app_state.active_view = active_view if active_view in {"tiles", "run", "arena", "pages"} else "tiles"
-        bridge_target_tile_id_raw = payload.get("bridge_target_tile_id")
-        bridge_target_tile_id = None
-        if bridge_target_tile_id_raw is not None:
-            candidate = _clamp_int(bridge_target_tile_id_raw, 0, TILE_COUNT - 1, -1)
-            if candidate in self.tiles:
-                bridge_target_tile_id = candidate
-        self.app_state.bridge_target_tile_id = bridge_target_tile_id
-
-        focused_tile_id_raw = payload.get("focused_tile_id")
-        focused_tile_id = None
-        if focused_tile_id_raw is not None:
-            candidate = _clamp_int(focused_tile_id_raw, 0, TILE_COUNT - 1, -1)
-            if candidate in self.tiles:
-                focused_tile_id = candidate
-
-        split_panel_visible = _coerce_bool(payload.get("split_panel_visible", False))
-        self.app_state.is_fullscreen = _coerce_bool(payload.get("is_fullscreen", False))
-
-        if focused_tile_id is not None:
-            self.enter_focus_mode(focused_tile_id, show_split_panel=split_panel_visible)
-        else:
-            self.app_state.focused_tile_id = None
-            self.app_state.split_panel_visible = False
-            if self.app_state.active_view == "run":
-                self.show_run_page()
-            elif self.app_state.active_view == "pages":
-                self.show_pages_bridge_page()
-            elif self.app_state.active_view == "arena":
-                self.show_arena_page()
+        try:
+            if not payload:
+                self._show_active_workspace()
             else:
-                self.show_tile_page(self.app_state.current_page_index)
+                window_payload = payload.get("window")
+                if isinstance(window_payload, dict):
+                    width = _clamp_int(window_payload.get("width"), MINIMUM_WINDOW_SIZE.width(), 10000, DEFAULT_WINDOW_SIZE.width())
+                    height = _clamp_int(window_payload.get("height"), MINIMUM_WINDOW_SIZE.height(), 10000, DEFAULT_WINDOW_SIZE.height())
+                    self.resize(width, height)
+                    self.app_state.window_size = self.size()
 
-        if self.app_state.is_fullscreen:
-            self.showFullScreen()
-            self.fullscreen_button.setText("Quitter plein écran")
-        else:
-            self.showNormal()
-            self.fullscreen_button.setText("Plein écran")
+                tiles_payload = payload.get("tiles")
+                if isinstance(tiles_payload, list):
+                    for tile_payload in tiles_payload:
+                        if not isinstance(tile_payload, dict):
+                            continue
+                        tile_id = _clamp_int(tile_payload.get("tile_id"), 0, TILE_COUNT - 1, -1)
+                        if tile_id not in self.tiles:
+                            continue
+                        current_url = str(tile_payload.get("current_url", "") or "")
+                        try:
+                            zoom_factor = float(tile_payload.get("zoom_factor", 1.0))
+                        except (TypeError, ValueError):
+                            zoom_factor = 1.0
+                        self.tiles[tile_id].restore_from_session(current_url=current_url, zoom_factor=zoom_factor)
 
-        self._restoring_session = False
+                self._apply_slot_order(self._tile_positions_from_payload(payload))
+                self._rebuild_tile_layout()
+
+                self._last_selected_tile_id = _clamp_int(
+                    payload.get("last_selected_tile_id"),
+                    0,
+                    TILE_COUNT - 1,
+                    0,
+                )
+                self.app_state.last_selected_tile_id = self._last_selected_tile_id
+                self.app_state.current_page_index = _clamp_int(
+                    payload.get("current_page_index"),
+                    0,
+                    PAGE_COUNT - 1,
+                    0,
+                )
+                active_view = str(payload.get("active_view", "tiles") or "tiles")
+                self.app_state.active_view = active_view if active_view in {"tiles", "run", "arena", "pages"} else "tiles"
+                bridge_target_tile_id_raw = payload.get("bridge_target_tile_id")
+                bridge_target_tile_id = None
+                if bridge_target_tile_id_raw is not None:
+                    candidate = _clamp_int(bridge_target_tile_id_raw, 0, TILE_COUNT - 1, -1)
+                    if candidate in self.tiles:
+                        bridge_target_tile_id = candidate
+                self.app_state.bridge_target_tile_id = bridge_target_tile_id
+
+                focused_tile_id_raw = payload.get("focused_tile_id")
+                focused_tile_id = None
+                if focused_tile_id_raw is not None:
+                    candidate = _clamp_int(focused_tile_id_raw, 0, TILE_COUNT - 1, -1)
+                    if candidate in self.tiles:
+                        focused_tile_id = candidate
+
+                split_panel_visible = _coerce_bool(payload.get("split_panel_visible", False))
+                self.app_state.is_fullscreen = _coerce_bool(payload.get("is_fullscreen", False))
+
+                if focused_tile_id is not None:
+                    self.enter_focus_mode(focused_tile_id, show_split_panel=split_panel_visible)
+                else:
+                    self.app_state.focused_tile_id = None
+                    self.app_state.split_panel_visible = False
+                    if self.app_state.active_view == "run":
+                        self.show_run_page()
+                    elif self.app_state.active_view == "pages":
+                        self.show_pages_bridge_page()
+                    elif self.app_state.active_view == "arena":
+                        self.show_arena_page()
+                    else:
+                        self.show_tile_page(self.app_state.current_page_index)
+
+                if self.app_state.is_fullscreen:
+                    self.showFullScreen()
+                    self.fullscreen_button.setText("Quitter plein écran")
+                else:
+                    self.showNormal()
+                    self.fullscreen_button.setText("Plein écran")
+
+            self._sync_focus_flags()
+            self._refresh_top_state()
+        finally:
+            self._restoring_session = False
+        self.arena_controller.request_snapshot_refresh(force=True)
+
+    def _on_arena_snapshot_ready(self, snapshot: object) -> None:
+        if not isinstance(snapshot, dict):
+            return
+        arena_state = str(snapshot.get("arena_state", "ARENA_OFFLINE"))
+        self.arena_button.setProperty("arenaState", arena_state)
+        self.arena_button.setToolTip(f"Arène: {arena_state}")
+        self.arena_button.style().unpolish(self.arena_button)
+        self.arena_button.style().polish(self.arena_button)
+        if self.main_stack.currentWidget() is self.arena_workspace:
+            self.arena_workspace._apply_snapshot(snapshot)
+
+    def _on_arena_snapshot_failed(self, _message: str) -> None:
+        cached_snapshot = self.arena_controller.cached_snapshot()
+        if cached_snapshot is None:
+            self.arena_button.setToolTip("Arène: état dégradé")
+            return
+        arena_state = str(cached_snapshot.get("arena_state", "ARENA_OFFLINE"))
+        self.arena_button.setProperty("arenaState", arena_state)
+        self.arena_button.setToolTip(f"Arène: {arena_state}")
+        self.arena_button.style().unpolish(self.arena_button)
+        self.arena_button.style().polish(self.arena_button)
 
     def _save_session(self) -> None:
         self.app_state.window_size = self.size()

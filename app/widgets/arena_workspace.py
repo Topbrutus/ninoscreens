@@ -312,9 +312,24 @@ class ArenaWorkspace(QFrame):
         self.refresh_view()
         return True
 
-    def refresh_view(self) -> None:
-        snapshot = self.controller.snapshot()
+    def refresh_view(self, snapshot: dict[str, Any] | None = None) -> None:
+        if snapshot is None:
+            snapshot = self.controller.cached_snapshot()
+            if snapshot is None:
+                self.controller.request_snapshot_refresh(force=True)
+                return
+            if self.controller.snapshot_is_stale():
+                self.controller.request_snapshot_refresh()
         self._apply_snapshot(snapshot)
+
+    def _snapshot_for_action(self) -> dict[str, Any]:
+        snapshot = self.controller.cached_snapshot()
+        if snapshot is None:
+            self.controller.request_snapshot_refresh(force=True)
+            return {}
+        if self.controller.snapshot_is_stale():
+            self.controller.request_snapshot_refresh()
+        return snapshot
 
     def _apply_snapshot(self, snapshot: dict[str, Any]) -> None:
         self.state_badge.setText(str(snapshot.get("arena_state", "ARENA_OFFLINE")))
@@ -478,7 +493,7 @@ class ArenaWorkspace(QFrame):
         self.refresh_view()
 
     def _copy_session_id(self) -> None:
-        session_id = self.controller.snapshot().get("reine", {}).get("session_id")
+        session_id = self._snapshot_for_action().get("reine", {}).get("session_id")
         if not session_id:
             return
         QGuiApplication.clipboard().setText(str(session_id))
@@ -544,26 +559,26 @@ class ArenaWorkspace(QFrame):
         self.event_feed.append(f"{action}: {result}")
 
     def _run_d_only_audit(self) -> None:
-        snapshot = self.controller.snapshot()
+        snapshot = self._snapshot_for_action()
         self.controller.store.append_event("RUN_AUDIT", {"status": snapshot.get("d_only", {}).get("status")})
         self.refresh_view()
 
     def _view_d_only_violations(self) -> None:
-        d_only = self.controller.snapshot().get("d_only", {})
+        d_only = self._snapshot_for_action().get("d_only", {})
         self.controller.store.append_event("VIEW_VIOLATIONS", {"count": d_only.get("non_compliant_paths", d_only.get("violation_count", 0))})
         self.refresh_view()
 
     def _prepare_d_only_migration(self) -> None:
-        d_only = self.controller.snapshot().get("d_only", {})
+        d_only = self._snapshot_for_action().get("d_only", {})
         self.controller.store.append_event("PREPARE_MIGRATION", {"status": d_only.get("status"), "last_refusal": d_only.get("last_refusal")})
         self.refresh_view()
 
     def _test_d_only_launch(self) -> None:
-        d_only = self.controller.snapshot().get("d_only", {})
+        d_only = self._snapshot_for_action().get("d_only", {})
         self.controller.store.append_event("TEST_LAUNCH", {"codex": d_only.get("codex_command")})
         self.refresh_view()
 
     def _export_d_only_report(self) -> None:
-        d_only = self.controller.snapshot().get("d_only", {})
+        d_only = self._snapshot_for_action().get("d_only", {})
         self.controller.store.append_event("EXPORT_REPORT", {"status": d_only.get("status"), "components": d_only.get("non_compliant_components", d_only.get("violation_count", 0)), "paths": d_only.get("non_compliant_paths", d_only.get("violation_count", 0))})
         self.refresh_view()

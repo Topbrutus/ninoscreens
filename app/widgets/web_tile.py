@@ -1518,6 +1518,10 @@ class WebTile(QFrame):
     def restore_from_session(self, current_url: str, zoom_factor: float) -> None:
         clean_url = current_url.strip()
         if not clean_url:
+            if self._browser_container is None and not self._state.current_url and not self._state.has_content and self._state.status == TileVisualStatus.EMPTY:
+                if self.stack.currentWidget() is not self.empty_page:
+                    self.stack.setCurrentWidget(self.empty_page)
+                return
             self.reset_to_empty()
             return
         zoom = max(MIN_ZOOM, min(MAX_ZOOM, round(float(zoom_factor), 2)))
@@ -1584,6 +1588,19 @@ class WebTile(QFrame):
         self._emit_state()
 
     def reset_to_empty(self) -> None:
+        if (
+            self._browser_container is None
+            and not self._state.current_url
+            and not self._state.has_content
+            and not self._state.is_loading
+            and self._state.error_message == ""
+            and self._state.zoom_factor == DEFAULT_ZOOM
+            and self._state.status == TileVisualStatus.EMPTY
+            and self._state.site_icon is None
+        ):
+            if self.stack.currentWidget() is not self.empty_page:
+                self.stack.setCurrentWidget(self.empty_page)
+            return
         if self._browser_container is not None:
             self._stop_media_capture()
             self.web_page_released.emit()

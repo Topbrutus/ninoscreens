@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
+from copy import deepcopy
 import json
 import os
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any
+
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 from app.arena_store import ArenaStore
 
@@ -85,12 +89,96 @@ def _first_where_path(tool_name: str) -> str | None:
     return None
 
 
+class _SnapshotSignals(QObject):
+    snapshot_ready = Signal(object)
+    snapshot_failed = Signal(str)
+
+
+class _SnapshotTask(QRunnable):
+    def __init__(self, controller: "ArenaController") -> None:
+        super().__init__()
+        self._controller = controller
+
+    def run(self) -> None:
+        try:
+            snapshot = self._controller._build_snapshot()
+        except Exception as exc:  # pragma: no cover - defensive background handling
+            self._controller._finish_snapshot_refresh(error=str(exc))
+            return
+        self._controller._finish_snapshot_refresh(snapshot=snapshot)
+
+
 class ArenaController:
     def __init__(self, store: ArenaStore | None = None) -> None:
         self.store = store or ArenaStore()
         self.store.ensure_initialized()
+        self._snapshot_lock = threading.Lock()
+        self._snapshot_cache: dict[str, Any] | None = None
+        self._snapshot_cache_timestamp = 0.0
+        self._snapshot_cache_ttl_seconds = 3.0
+        self._snapshot_refresh_in_progress = False
+        self._snapshot_last_error = None
+        self.snapshot_signals = _SnapshotSignals()
+        self._snapshot_thread_pool = QThreadPool.globalInstance()
 
     def snapshot(self) -> dict[str, Any]:
+        return self._build_snapshot()
+
+    def cached_snapshot(self) -> dict[str, Any] | None:
+        with self._snapshot_lock:
+            if self._snapshot_cache is None:
+                return None
+            return deepcopy(self._snapshot_cache)
+
+    def snapshot_refresh_in_progress(self) -> bool:
+        with self._snapshot_lock:
+            return self._snapshot_refresh_in_progress
+
+    def snapshot_is_stale(self, ttl_seconds: float | None = None) -> bool:
+        ttl = self._snapshot_cache_ttl_seconds if ttl_seconds is None else float(ttl_seconds)
+        with self._snapshot_lock:
+            if self._snapshot_cache is None:
+                return True
+            return (datetime.now(timezone.utc).timestamp() - self._snapshot_cache_timestamp) >= ttl
+
+    def snapshot_last_error(self) -> str | None:
+        with self._snapshot_lock:
+            return self._snapshot_last_error
+
+    def request_snapshot_refresh(self, *, force: bool = False) -> bool:
+        with self._snapshot_lock:
+            if self._snapshot_refresh_in_progress:
+                return False
+            if not force and self._snapshot_cache is not None:
+                if (datetime.now(timezone.utc).timestamp() - self._snapshot_cache_timestamp) < self._snapshot_cache_ttl_seconds:
+                    return False
+            self._snapshot_refresh_in_progress = True
+            self._snapshot_last_error = None
+        self._snapshot_thread_pool.start(_SnapshotTask(self))
+        return True
+
+    def _finish_snapshot_refresh(self, snapshot: dict[str, Any] | None = None, error: str | None = None) -> None:
+        with self._snapshot_lock:
+            self._snapshot_refresh_in_progress = False
+            if snapshot is not None:
+                self._snapshot_cache = deepcopy(snapshot)
+                self._snapshot_cache_timestamp = datetime.now(timezone.utc).timestamp()
+                self._snapshot_last_error = None
+            elif error:
+                self._snapshot_last_error = error
+            cached_snapshot = deepcopy(self._snapshot_cache) if self._snapshot_cache is not None else None
+        if snapshot is not None:
+            try:
+                self.snapshot_signals.snapshot_ready.emit(cached_snapshot)
+            except RuntimeError:
+                return
+        elif error:
+            try:
+                self.snapshot_signals.snapshot_failed.emit(error)
+            except RuntimeError:
+                return
+
+    def _build_snapshot(self) -> dict[str, Any]:
         config = self.store.load_config()
         registry = self.store.load_registry()
         core = _first_process(r"D:\\antmux\.exe")
@@ -214,7 +302,7 @@ class ArenaController:
                 "non_compliant_components": len(non_compliant_components),
                 "non_compliant_paths": len(violations),
                 "components": non_compliant_components,
-                "last_checked": datetime.utcnow().isoformat(),
+                "last_checked": datetime.now(timezone.utc).isoformat(),
                 "last_refusal": violations[0]["path"] if violations else None,
                 "codex_command": codex_path,
                 "env_violations": env_violations,
@@ -316,7 +404,7 @@ class ArenaController:
             return {"status": "BLOCKED", "cause": "CONFIRMATION_REQUIRED"}
         registry = self.store.load_registry()
         registry["reine"]["status"] = "OFFLINE"
-        registry["reine"]["last_activity"] = datetime.utcnow().isoformat()
+        registry["reine"]["last_activity"] = datetime.now(timezone.utc).isoformat()
         self.store.save_registry(registry)
         self.store.append_event("REINE_STOPPED", {"instance_id": registry["reine"]["instance_id"]})
         return {"status": "STOPPED", "instance_id": registry["reine"]["instance_id"]}
@@ -409,7 +497,7 @@ class ArenaController:
             worker["pid_codex"] = None
             worker["job_id"] = None
             worker["lease_id"] = None
-            worker["last_activity"] = datetime.utcnow().isoformat()
+            worker["last_activity"] = datetime.now(timezone.utc).isoformat()
         self.store.save_registry(registry)
         self.store.append_event("STOP_ALL_JOURNALIERS", {"count": len(registry["workers"])})
         return {"status": "STOPPED", "count": len(registry["workers"])}
