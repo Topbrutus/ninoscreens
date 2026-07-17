@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nino Web Media Test</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #11151b;
+      --panel: #1a212b;
+      --border: #334154;
+      --text: #edf2f7;
+      --muted: #aab6c5;
+      --accent: #4aa3df;
+      --danger: #d06a6a;
+      --success: #5ab56f;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top, #1a2330, var(--bg) 60%);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 28px;
+    }
+
+    .shell {
+      max-width: 1080px;
+      margin: 0 auto;
+      display: grid;
+      gap: 18px;
+    }
+
+    .panel {
+      background: rgba(26, 33, 43, 0.95);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 28px;
+    }
+
+    p, li {
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 16px 0 0;
+    }
+
+    button {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #243244;
+      color: var(--text);
+      padding: 10px 14px;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #31435a;
+    }
+
+    button.danger {
+      background: #4c2a2a;
+      border-color: #8e4d4d;
+    }
+
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .metric {
+      padding: 12px;
+      border-radius: 12px;
+      background: #141a22;
+      border: 1px solid #2e3948;
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 8px;
+    }
+
+    .metric span {
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    #video-preview {
+      width: 100%;
+      min-height: 320px;
+      border-radius: 14px;
+      background: #0f1318;
+      border: 1px solid #2c3948;
+      object-fit: cover;
+    }
+
+    #log {
+      min-height: 120px;
+      border-radius: 12px;
+      background: #10151b;
+      border: 1px solid #293443;
+      padding: 12px;
+      white-space: pre-wrap;
+      color: #d9e5f3;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 13px;
+    }
+
+    .ok { color: var(--success); }
+    .bad { color: var(--danger); }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="panel">
+      <h1>Test local microphone et caméra</h1>
+      <p>
+        Cette page locale utilise uniquement les API Web standards de média.
+        Aucun flux n’est envoyé sur Internet.
+      </p>
+      <div class="actions">
+        <button id="test-mic">Tester le microphone</button>
+        <button id="test-cam">Tester la caméra</button>
+        <button id="test-both">Tester les deux</button>
+        <button id="stop-media" class="danger">Arrêter</button>
+      </div>
+      <div class="status-grid">
+        <div class="metric">
+          <strong>Microphone</strong>
+          <span id="mic-state">inactif</span>
+        </div>
+        <div class="metric">
+          <strong>Caméra</strong>
+          <span id="cam-state">inactive</span>
+        </div>
+        <div class="metric">
+          <strong>Niveau audio</strong>
+          <span id="audio-level">0</span>
+        </div>
+        <div class="metric">
+          <strong>Dernière erreur</strong>
+          <span id="error-state">aucune</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <video id="video-preview" autoplay playsinline muted></video>
+    </section>
+
+    <section class="panel">
+      <div id="log"></div>
+    </section>
+  </div>
+
+  <script>
+    (() => {
+      const logNode = document.getElementById("log");
+      const micState = document.getElementById("mic-state");
+      const camState = document.getElementById("cam-state");
+      const audioLevelNode = document.getElementById("audio-level");
+      const errorState = document.getElementById("error-state");
+      const preview = document.getElementById("video-preview");
+
+      let currentStream = null;
+      let audioContext = null;
+      let audioSourceNode = null;
+      let analyser = null;
+      let levelTimer = null;
+      let lastError = "";
+      let lastAudioContextInitialState = "none";
+      let lastAudioContextResumeRequested = false;
+      let mediaRequestToken = 0;
+      const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+
+      function log(message, kind = "ok") {
+        const line = `[${new Date().toLocaleTimeString()}] ${message}`;
+        const div = document.createElement("div");
+        div.textContent = line;
+        div.className = kind === "error" ? "bad" : "ok";
+        logNode.prepend(div);
+      }
+
+      function updateStatus() {
+        const audioTracks = currentStream ? currentStream.getAudioTracks().filter(track => track.readyState !== "ended") : [];
+        const videoTracks = currentStream ? currentStream.getVideoTracks().filter(track => track.readyState !== "ended") : [];
+        micState.textContent = audioTracks.length ? "actif" : "inactif";
+        camState.textContent = videoTracks.length ? "active" : "inactive";
+        errorState.textContent = lastError || "aucune";
+      }
+
+      async function getSharedAudioContext() {
+        if (!AudioContextCtor) {
+          throw new Error("AudioContext indisponible");
+        }
+        if (!audioContext || audioContext.state === "closed") {
+          audioContext = new AudioContextCtor();
+          lastAudioContextInitialState = audioContext.state;
+        }
+        if (audioContext.state === "suspended") {
+          lastAudioContextResumeRequested = true;
+          await audioContext.resume();
+        }
+        return audioContext;
+      }
+
+      function stopLevelMeter() {
+        if (levelTimer !== null) {
+          window.clearInterval(levelTimer);
+          levelTimer = null;
+        }
+        if (audioSourceNode) {
+          audioSourceNode.disconnect();
+          audioSourceNode = null;
+        }
+        if (analyser) {
+          analyser.disconnect();
+        }
+        analyser = null;
+        audioLevelNode.textContent = "0";
+      }
+
+      async function startLevelMeter(stream, context = null) {
+        stopLevelMeter();
+        const audioTracks = stream.getAudioTracks();
+        if (!audioTracks.length) {
+          return;
+        }
+        const activeAudioContext = context || await getSharedAudioContext();
+        audioContext = activeAudioContext;
+        audioSourceNode = activeAudioContext.createMediaStreamSource(stream);
+        analyser = activeAudioContext.createAnalyser();
+        analyser.fftSize = 256;
+        audioSourceNode.connect(analyser);
+        const samples = new Uint8Array(analyser.frequencyBinCount);
+        levelTimer = window.setInterval(() => {
+          analyser.getByteFrequencyData(samples);
+          const sum = samples.reduce((acc, value) => acc + value, 0);
+          audioLevelNode.textContent = String(Math.round(sum / Math.max(1, samples.length)));
+        }, 150);
+      }
+
+      function stopCurrentStream() {
+        mediaRequestToken += 1;
+        if (currentStream) {
+          for (const track of currentStream.getTracks()) {
+            track.stop();
+          }
+          currentStream = null;
+        }
+        preview.srcObject = null;
+        stopLevelMeter();
+        updateStatus();
+        log("Flux média arrêté.");
+      }
+
+      async function requestMedia(constraints, label) {
+        stopCurrentStream();
+        const requestToken = mediaRequestToken;
+        lastError = "";
+        lastAudioContextInitialState = "none";
+        lastAudioContextResumeRequested = false;
+        updateStatus();
+        try {
+          const sharedAudioContext = constraints.audio ? await getSharedAudioContext() : null;
+          const stream = await navigator.mediaDevices.getUserMedia(constraints);
+          if (requestToken !== mediaRequestToken) {
+            for (const track of stream.getTracks()) {
+              track.stop();
+            }
+            return;
+          }
+          currentStream = stream;
+          preview.srcObject = currentStream;
+          preview.muted = true;
+          await preview.play().catch(() => {});
+          await startLevelMeter(currentStream, sharedAudioContext);
+          updateStatus();
+          log(`Succès: ${label}`);
+        } catch (error) {
+          lastError = `${error?.name || "Error"}: ${error?.message || "échec média"}`;
+          updateStatus();
+          log(`Échec ${label}: ${lastError}`, "error");
+        }
+      }
+
+      document.getElementById("test-mic").addEventListener("click", () => {
+        requestMedia({ audio: true, video: false }, "microphone");
+      });
+
+      document.getElementById("test-cam").addEventListener("click", () => {
+        requestMedia({ audio: false, video: true }, "caméra");
+      });
+
+      document.getElementById("test-both").addEventListener("click", () => {
+        requestMedia({ audio: true, video: true }, "microphone + caméra");
+      });
+
+      document.getElementById("stop-media").addEventListener("click", stopCurrentStream);
+
+      window.ninoMediaTest = {
+        async testMicrophone() {
+          await requestMedia({ audio: true, video: false }, "microphone");
+          return this.summary();
+        },
+        async testCamera() {
+          await requestMedia({ audio: false, video: true }, "caméra");
+          return this.summary();
+        },
+        async testBoth() {
+          await requestMedia({ audio: true, video: true }, "microphone + caméra");
+          return this.summary();
+        },
+        stop() {
+          stopCurrentStream();
+          return this.summary();
+        },
+        summary() {
+          const audioTracks = currentStream ? currentStream.getAudioTracks().filter(track => track.readyState !== "ended") : [];
+          const videoTracks = currentStream ? currentStream.getVideoTracks().filter(track => track.readyState !== "ended") : [];
+          return {
+            audioActive: audioTracks.length > 0,
+            videoActive: videoTracks.length > 0,
+            audioTrackCount: audioTracks.length,
+            videoTrackCount: videoTracks.length,
+            lastError,
+            audioContextState: audioContext ? audioContext.state : "none",
+            audioContextInitialState: lastAudioContextInitialState,
+            audioContextResumeRequested: lastAudioContextResumeRequested,
+            meterActive: levelTimer !== null,
+            audioLevel: audioLevelNode.textContent,
+          };
+        },
+      };
+
+      log("Page de test locale prête.");
+      updateStatus();
+    })();
+  </script>
+</body>
+</html>
