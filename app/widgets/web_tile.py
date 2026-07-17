@@ -91,6 +91,9 @@ class WebTile(QFrame):
         self._toolbar_feedback_timer = QTimer(self)
         self._toolbar_feedback_timer.setSingleShot(True)
         self._toolbar_feedback_timer.timeout.connect(self._clear_toolbar_feedback)
+        self._browser_focus_timer = QTimer(self)
+        self._browser_focus_timer.setSingleShot(True)
+        self._browser_focus_timer.timeout.connect(self._apply_browser_focus)
         self._media_probe_installed = False
         self._media_audio_active = False
         self._media_video_active = False
@@ -190,8 +193,8 @@ class WebTile(QFrame):
         self.split_button.style().polish(self.split_button)
 
     def load_google_page(self) -> None:
-        self._navigate_from_text("https://www.google.com/")
-        self.request_browser_focus()
+        if self._navigate_from_text("https://www.google.com/"):
+            self.request_browser_focus()
 
     def copy_displayed_url(self) -> None:
         if self._browser_container is None:
@@ -211,10 +214,12 @@ class WebTile(QFrame):
     def request_browser_focus(self) -> None:
         if self._browser_container is None or self._web_view is None:
             return
-        QTimer.singleShot(0, self._apply_browser_focus)
+        self._browser_focus_timer.start(0)
 
     def _apply_browser_focus(self) -> None:
         if self._browser_container is None or self._web_view is None:
+            return
+        if not self.isVisible() or not self._browser_container.isVisible() or not self._web_view.isVisible():
             return
         self.stack.setCurrentWidget(self._browser_container)
         self._web_view.setFocus(Qt.FocusReason.OtherFocusReason)
@@ -451,10 +456,12 @@ class WebTile(QFrame):
             self.split_requested.emit(self.tile_id)
 
     def load_from_empty_input(self) -> None:
-        self._navigate_from_text(self.empty_url_edit.text())
+        if self._navigate_from_text(self.empty_url_edit.text()):
+            self.request_browser_focus()
 
     def load_from_browser_input(self) -> None:
-        self._navigate_from_text(self.browser_url_edit.text())
+        if self._navigate_from_text(self.browser_url_edit.text()):
+            self.request_browser_focus()
 
     def open_url_text(self, raw_text: str) -> None:
         self._navigate_from_text(raw_text)
@@ -1523,11 +1530,11 @@ class WebTile(QFrame):
             self._web_view.setZoomFactor(zoom)
         self._apply_navigation_state()
 
-    def _navigate_from_text(self, raw_text: str) -> None:
+    def _navigate_from_text(self, raw_text: str) -> bool:
         result = normalize_user_url(raw_text)
         if not result.ok:
             self.show_input_error(result.error)
-            return
+            return False
         self.clear_errors()
         self._ensure_browser_page()
         self.stack.setCurrentWidget(self._browser_container)
@@ -1537,6 +1544,7 @@ class WebTile(QFrame):
         self._state.error_message = ""
         self._state.status = TileVisualStatus.LOADING
         self._load_qurl(result.url)
+        return True
 
     def _load_qurl(self, qurl: QUrl) -> None:
         if self._web_view is None:
@@ -1628,7 +1636,6 @@ class WebTile(QFrame):
             self._state.error_message = ""
             self.clear_errors()
             self._install_media_probe()
-            self.request_browser_focus()
         else:
             self._state.status = TileVisualStatus.ERROR
             self._state.error_message = "The page failed to load."

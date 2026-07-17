@@ -49,7 +49,13 @@ from app.jules_summary import (
 )
 from app.session_store import load_session_payload, save_session_payload, serialize_app_state
 from app.state import AppState, TileState
-from app.state import derive_slot_to_tile_id, derive_tile_id_to_slot, normalize_slot_to_tile_id, swap_slot_order
+from app.state import (
+    derive_slot_to_tile_id,
+    derive_slot_to_tile_id_from_tile_positions,
+    derive_tile_id_to_slot,
+    normalize_slot_to_tile_id,
+    swap_slot_order,
+)
 from app.terminal import TerminalRuntime
 from app.web_media import WebMediaPermissionController
 from app.web_profile import build_shared_profile
@@ -749,15 +755,31 @@ class MainWindow(QMainWindow):
     def _tile_positions_from_payload(self, payload: dict[str, object]) -> list[int]:
         default_positions = list(range(TILE_COUNT))
         raw_slot_to_tile_id = payload.get("slot_to_tile_id")
-        if raw_slot_to_tile_id is None:
-            raw_tile_id_to_slot = payload.get("tile_id_to_slot")
-            if isinstance(raw_tile_id_to_slot, list) and len(raw_tile_id_to_slot) == TILE_COUNT:
-                slot_to_tile_id = derive_slot_to_tile_id(raw_tile_id_to_slot)
-                return slot_to_tile_id if slot_to_tile_id != default_positions else default_positions
-            return default_positions
+        if isinstance(raw_slot_to_tile_id, list) and len(raw_slot_to_tile_id) == TILE_COUNT:
+            slot_to_tile_id = normalize_slot_to_tile_id(raw_slot_to_tile_id)
+            return slot_to_tile_id if slot_to_tile_id != default_positions else default_positions
 
-        slot_to_tile_id = normalize_slot_to_tile_id(raw_slot_to_tile_id)
-        return slot_to_tile_id if slot_to_tile_id != default_positions else default_positions
+        raw_tile_id_to_slot = payload.get("tile_id_to_slot")
+        if isinstance(raw_tile_id_to_slot, list) and len(raw_tile_id_to_slot) == TILE_COUNT:
+            slot_to_tile_id = derive_slot_to_tile_id(raw_tile_id_to_slot)
+            return slot_to_tile_id if slot_to_tile_id != default_positions else default_positions
+
+        raw_tile_positions = payload.get("tile_positions")
+        if isinstance(raw_tile_positions, list) and len(raw_tile_positions) == TILE_COUNT:
+            slot_to_tile_id = derive_slot_to_tile_id_from_tile_positions(raw_tile_positions)
+            return slot_to_tile_id if slot_to_tile_id != default_positions else default_positions
+
+        raw_positions = payload.get("positions")
+        if isinstance(raw_positions, list) and len(raw_positions) == TILE_COUNT:
+            slot_to_tile_id = derive_slot_to_tile_id_from_tile_positions(raw_positions)
+            return slot_to_tile_id if slot_to_tile_id != default_positions else default_positions
+
+        raw_slot_order = payload.get("slot_order")
+        if isinstance(raw_slot_order, list) and len(raw_slot_order) == TILE_COUNT:
+            slot_to_tile_id = normalize_slot_to_tile_id(raw_slot_order)
+            return slot_to_tile_id if slot_to_tile_id != default_positions else default_positions
+
+        return default_positions
 
     def _rebuild_tile_layout(self) -> None:
         main_panel = getattr(self.focus_view, "main_panel", None)

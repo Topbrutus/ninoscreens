@@ -126,6 +126,38 @@ def normalize_slot_to_tile_id(raw_value: object, tile_count: int = TILE_COUNT) -
     return slot_to_tile_id
 
 
+def derive_slot_to_tile_id_from_tile_positions(tile_positions: object, tile_count: int = TILE_COUNT) -> list[int]:
+    identity = _normalize_identity_order(tile_count)
+    if not isinstance(tile_positions, list) or len(tile_positions) != tile_count:
+        return identity
+
+    slot_to_tile_id = [-1] * tile_count
+    seen_slots: set[int] = set()
+    placed_tiles: set[int] = set()
+    for tile_id, raw_slot in enumerate(tile_positions):
+        try:
+            slot_index = int(raw_slot)
+        except (TypeError, ValueError):
+            continue
+        if slot_index < 0 or slot_index >= tile_count or slot_index in seen_slots:
+            continue
+        slot_to_tile_id[slot_index] = tile_id
+        seen_slots.add(slot_index)
+        placed_tiles.add(tile_id)
+
+    remaining_tiles = [tile_id for tile_id in range(tile_count) if tile_id not in placed_tiles]
+    remaining_index = 0
+    for slot_index, tile_id in enumerate(slot_to_tile_id):
+        if tile_id != -1:
+            continue
+        if remaining_index >= len(remaining_tiles):
+            return identity
+        slot_to_tile_id[slot_index] = remaining_tiles[remaining_index]
+        remaining_index += 1
+
+    return slot_to_tile_id
+
+
 def swap_slot_order(slot_to_tile_id: list[int], first_tile_id: int, second_tile_id: int, tile_count: int = TILE_COUNT) -> list[int]:
     order = list(slot_to_tile_id)
     if len(order) != tile_count:
