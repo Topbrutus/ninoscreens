@@ -231,7 +231,8 @@ class ArenaWorkspace(QFrame):
         self.d_only_form = QFormLayout()
         self.d_only_form.setVerticalSpacing(6)
         self.d_only_status_value = QLabel("unknown")
-        self.d_only_violations_value = QLabel("0")
+        self.d_only_components_value = QLabel("0")
+        self.d_only_paths_value = QLabel("0")
         self.d_only_tools_value = QLabel("0")
         self.d_only_profiles_value = QLabel("0")
         self.d_only_caches_value = QLabel("0")
@@ -241,7 +242,8 @@ class ArenaWorkspace(QFrame):
         self.d_only_codex_value = QLabel("non mesure")
         for label, value in (
             ("etat global", self.d_only_status_value),
-            ("nombre de violations", self.d_only_violations_value),
+            ("composants non conformes", self.d_only_components_value),
+            ("chemins non conformes", self.d_only_paths_value),
             ("outils sur D", self.d_only_tools_value),
             ("profils sur D", self.d_only_profiles_value),
             ("caches sur D", self.d_only_caches_value),
@@ -412,7 +414,8 @@ class ArenaWorkspace(QFrame):
 
     def _populate_d_only(self, d_only: dict[str, Any]) -> None:
         _set_label_text(self.d_only_status_value, d_only.get("status"))
-        _set_label_text(self.d_only_violations_value, d_only.get("violation_count"))
+        _set_label_text(self.d_only_components_value, d_only.get("non_compliant_components", d_only.get("violation_count")))
+        _set_label_text(self.d_only_paths_value, d_only.get("non_compliant_paths", d_only.get("violation_count")))
         _set_label_text(self.d_only_tools_value, d_only.get("tools_on_d"))
         _set_label_text(self.d_only_profiles_value, d_only.get("profiles_on_d"))
         _set_label_text(self.d_only_caches_value, d_only.get("caches_on_d"))
@@ -547,7 +550,7 @@ class ArenaWorkspace(QFrame):
 
     def _view_d_only_violations(self) -> None:
         d_only = self.controller.snapshot().get("d_only", {})
-        self.controller.store.append_event("VIEW_VIOLATIONS", {"count": d_only.get("violation_count", 0)})
+        self.controller.store.append_event("VIEW_VIOLATIONS", {"count": d_only.get("non_compliant_paths", d_only.get("violation_count", 0))})
         self.refresh_view()
 
     def _prepare_d_only_migration(self) -> None:
@@ -562,5 +565,5 @@ class ArenaWorkspace(QFrame):
 
     def _export_d_only_report(self) -> None:
         d_only = self.controller.snapshot().get("d_only", {})
-        self.controller.store.append_event("EXPORT_REPORT", {"status": d_only.get("status"), "violations": d_only.get("violation_count", 0)})
+        self.controller.store.append_event("EXPORT_REPORT", {"status": d_only.get("status"), "components": d_only.get("non_compliant_components", d_only.get("violation_count", 0)), "paths": d_only.get("non_compliant_paths", d_only.get("violation_count", 0))})
         self.refresh_view()

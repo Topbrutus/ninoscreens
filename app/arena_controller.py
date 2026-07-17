@@ -140,6 +140,12 @@ class ArenaController:
             "arena_log": str(self.store.paths.log_path),
             "arena_events": str(self.store.paths.events_path),
             "reine_workspace": str(registry.get("reine", {}).get("workspace", "")),
+            "python_runtime": r"D:\tools\python\tools",
+            "python_venv": r"D:\venvs\nino",
+            "python_cache": r"D:\cache\python",
+            "python_userbase": r"D:\runtime\python-userbase",
+            "python_temp": r"D:\temp\python",
+            "python_config": r"D:\config\pip\pip.ini",
             "profiles_root": r"D:\runtime\profiles",
             "cache_root": r"D:\cache",
             "temp_root": r"D:\temp",
@@ -182,6 +188,7 @@ class ArenaController:
         d_only_status = "COMPLIANT"
         if violations:
             d_only_status = "BLOCKED" if codex_violation else "MIGRATION_REQUIRED"
+        non_compliant_components = sorted({str(item["component"]).split(":", 1)[-1] for item in violations})
         return {
             "config": config,
             "registry": registry,
@@ -202,6 +209,9 @@ class ArenaController:
                 "status": d_only_status,
                 "violations": violations,
                 "violation_count": len(violations),
+                "non_compliant_components": len(non_compliant_components),
+                "non_compliant_paths": len(violations),
+                "components": non_compliant_components,
                 "last_checked": datetime.utcnow().isoformat(),
                 "last_refusal": violations[0]["path"] if violations else None,
                 "codex_command": codex_path,
