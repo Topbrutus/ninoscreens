@@ -313,9 +313,19 @@
         lastAudioContextInitialState = "none";
         lastAudioContextResumeRequested = false;
         updateStatus();
+        let stream = null;
         try {
           const sharedAudioContext = constraints.audio ? primeSharedAudioContext() : null;
-          const stream = await navigator.mediaDevices.getUserMedia(constraints);
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+          if (requestToken !== mediaRequestToken) {
+            for (const track of stream.getTracks()) {
+              track.stop();
+            }
+            return;
+          }
+          if (sharedAudioContext) {
+            await settleSharedAudioContext();
+          }
           if (requestToken !== mediaRequestToken) {
             for (const track of stream.getTracks()) {
               track.stop();
@@ -326,13 +336,21 @@
           preview.srcObject = currentStream;
           preview.muted = true;
           await preview.play().catch(() => {});
-          if (sharedAudioContext) {
-            await settleSharedAudioContext();
-          }
           await startLevelMeter(currentStream, sharedAudioContext);
           updateStatus();
           log(`Succès: ${label}`);
         } catch (error) {
+          if (stream) {
+            for (const track of stream.getTracks()) {
+              track.stop();
+            }
+          }
+          if (currentStream === stream) {
+            currentStream = null;
+            preview.srcObject = null;
+            stopLevelMeter();
+            updateStatus();
+          }
           lastError = `${error?.name || "Error"}: ${error?.message || "échec média"}`;
           updateStatus();
           log(`Échec ${label}: ${lastError}`, "error");
