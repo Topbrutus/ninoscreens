@@ -192,6 +192,8 @@
       let lastError = "";
       let lastAudioContextInitialState = "none";
       let lastAudioContextResumeRequested = false;
+      let audioContextResumePromise = null;
+      let audioContextResumeError = null;
       let mediaRequestToken = 0;
       const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
 
@@ -211,15 +213,43 @@
         errorState.textContent = lastError || "aucune";
       }
 
-      async function getSharedAudioContext() {
+      function primeSharedAudioContext() {
         if (!AudioContextCtor) {
           throw new Error("AudioContext indisponible");
         }
         if (!audioContext || audioContext.state === "closed") {
           audioContext = new AudioContextCtor();
+          audioContextResumePromise = null;
+          audioContextResumeError = null;
           lastAudioContextInitialState = audioContext.state;
         }
         if (audioContext.state === "suspended") {
+          if (!audioContextResumePromise) {
+            lastAudioContextResumeRequested = true;
+            audioContextResumeError = null;
+            audioContextResumePromise = audioContext.resume()
+              .then(() => {
+                audioContextResumeError = null;
+              })
+              .catch((error) => {
+                audioContextResumeError = error;
+              });
+          }
+        }
+        return audioContext;
+      }
+
+      async function settleSharedAudioContext() {
+        if (audioContextResumePromise) {
+          await audioContextResumePromise;
+          audioContextResumePromise = null;
+        }
+        if (audioContextResumeError) {
+          const error = audioContextResumeError;
+          audioContextResumeError = null;
+          throw error;
+        }
+        if (audioContext && audioContext.state === "suspended") {
           lastAudioContextResumeRequested = true;
           await audioContext.resume();
         }
@@ -284,7 +314,7 @@
         lastAudioContextResumeRequested = false;
         updateStatus();
         try {
-          const sharedAudioContext = constraints.audio ? await getSharedAudioContext() : null;
+          const sharedAudioContext = constraints.audio ? primeSharedAudioContext() : null;
           const stream = await navigator.mediaDevices.getUserMedia(constraints);
           if (requestToken !== mediaRequestToken) {
             for (const track of stream.getTracks()) {
@@ -296,6 +326,9 @@
           preview.srcObject = currentStream;
           preview.muted = true;
           await preview.play().catch(() => {});
+          if (sharedAudioContext) {
+            await settleSharedAudioContext();
+          }
           await startLevelMeter(currentStream, sharedAudioContext);
           updateStatus();
           log(`Succès: ${label}`);
