@@ -24,6 +24,7 @@ TERMINAL_READY_TIMEOUT_SECONDS = 8.0
 TERMINAL_REQUEST_TIMEOUT_SECONDS = 8.0
 TERMINAL_SHUTDOWN_TIMEOUT_SECONDS = 8.0
 TERMINAL_TYPE = "powershell"
+POWERSHELL_EXECUTABLE = Path(r"D:\tools\powershell\7.6.3\pwsh.exe")
 
 
 class TerminalRuntimeError(RuntimeError):
@@ -34,10 +35,18 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _powershell_command() -> list[str]:
-    system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
-    powershell_path = system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
-    return [str(powershell_path), "-NoLogo", "-NoProfile"]
+def _powershell_command(start_dir: Path) -> list[str]:
+    profile_path = os.environ.get("ANTMUX_POWERSHELL_PROFILE", "").strip()
+    command = [str(POWERSHELL_EXECUTABLE), "-NoLogo", "-NoProfile"]
+    if profile_path:
+        command.extend(
+            [
+                "-NoExit",
+                "-Command",
+                f". '{profile_path}'; Set-Location -LiteralPath '{start_dir}';",
+            ]
+        )
+    return command
 
 
 class _TerminalSession:
@@ -52,7 +61,7 @@ class _TerminalSession:
         self.session_id = session_id
         self.display_name = display_name
         self.start_dir = start_dir
-        self.command = _powershell_command()
+        self.command = _powershell_command(self.start_dir)
         self.terminal_type = TERMINAL_TYPE
         self.created_at = datetime.now(timezone.utc).isoformat()
         self.process: PtyProcess | None = None

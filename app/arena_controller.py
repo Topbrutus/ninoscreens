@@ -10,6 +10,8 @@ from typing import Any
 
 from app.arena_store import ArenaStore
 
+POWERSHELL_EXECUTABLE = r"D:\tools\powershell\7.6.3\pwsh.exe"
+
 
 def _safe_json_load(text: str) -> Any:
     if not text.strip():
@@ -22,7 +24,7 @@ def _safe_json_load(text: str) -> Any:
 
 def _ps_json(script: str) -> Any:
     completed = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+        [POWERSHELL_EXECUTABLE, "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
         capture_output=True,
         text=True,
         check=False,
