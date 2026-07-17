@@ -72,6 +72,8 @@ class WebTile(QFrame):
     focus_requested = Signal(int)
     grid_requested = Signal(int)
     split_requested = Signal(int)
+    grid_interchange_requested = Signal(int)
+    split_interchange_requested = Signal(int)
     web_page_ready = Signal(object)
     web_page_released = Signal()
 
@@ -86,6 +88,9 @@ class WebTile(QFrame):
         self._toolbar_focus_mode = False
         self._split_button_active = False
         self._split_panel_visible = False
+        self._toolbar_feedback_timer = QTimer(self)
+        self._toolbar_feedback_timer.setSingleShot(True)
+        self._toolbar_feedback_timer.timeout.connect(self._clear_toolbar_feedback)
         self._media_probe_installed = False
         self._media_audio_active = False
         self._media_video_active = False
@@ -145,15 +150,16 @@ class WebTile(QFrame):
             return
 
         if in_focus_mode:
-            self.focus_button.setText("▦")
+            self.focus_button.setText("Grille")
             self.focus_button.setToolTip("Retour à la grille")
             self.focus_button.setProperty("role", "nav")
             self.split_button.show()
         else:
-            self.focus_button.setText("⛶")
+            self.focus_button.setText("Focus")
             self.focus_button.setToolTip("Open this tile in focus mode")
             self.focus_button.setProperty("role", "accent")
             self.split_button.hide()
+            self.swap_pages_button.hide()
             self._split_button_active = False
             self._split_panel_visible = False
 
@@ -165,20 +171,64 @@ class WebTile(QFrame):
     def _refresh_split_button_state(self) -> None:
         if self._browser_container is None:
             return
-        self.split_button.setText("⇆")
+        self.split_button.setText("Split")
         if not self._split_button_active:
             tooltip = "Aucun split permanent actif"
             role = "nav"
+            self.swap_pages_button.hide()
         elif self._split_panel_visible:
             tooltip = "Masquer temporairement la page secondaire"
             role = "accent"
+            self.swap_pages_button.setVisible(self._toolbar_focus_mode)
         else:
             tooltip = "Restaurer la page secondaire liee"
             role = "accent"
+            self.swap_pages_button.setVisible(self._toolbar_focus_mode)
         self.split_button.setToolTip(tooltip)
         self.split_button.setProperty("role", role)
         self.split_button.style().unpolish(self.split_button)
         self.split_button.style().polish(self.split_button)
+
+    def load_google_page(self) -> None:
+        self._navigate_from_text("https://www.google.com/")
+        self.request_browser_focus()
+
+    def copy_displayed_url(self) -> None:
+        if self._browser_container is None:
+            return
+        text = self.browser_url_edit.text().strip()
+        if not text:
+            self._show_toolbar_feedback("URL vide")
+            return
+        try:
+            clipboard = QApplication.clipboard()
+            clipboard.setText(text)
+        except Exception:
+            self._show_toolbar_feedback("Presse-papiers indisponible")
+            return
+        self._show_toolbar_feedback("URL copiée")
+
+    def request_browser_focus(self) -> None:
+        if self._browser_container is None or self._web_view is None:
+            return
+        QTimer.singleShot(0, self._apply_browser_focus)
+
+    def _apply_browser_focus(self) -> None:
+        if self._browser_container is None or self._web_view is None:
+            return
+        self.stack.setCurrentWidget(self._browser_container)
+        self._web_view.setFocus(Qt.FocusReason.OtherFocusReason)
+        self._web_view.activateWindow()
+
+    def _show_toolbar_feedback(self, text: str) -> None:
+        self.toolbar_feedback_label.setText(text)
+        self.toolbar_feedback_label.show()
+        self._toolbar_feedback_timer.stop()
+        self._toolbar_feedback_timer.start(1200)
+
+    def _clear_toolbar_feedback(self) -> None:
+        self.toolbar_feedback_label.clear()
+        self.toolbar_feedback_label.hide()
 
     def _build_empty_page(self) -> QWidget:
         page = QWidget()
@@ -209,8 +259,13 @@ class WebTile(QFrame):
         self.empty_load_button.setProperty("role", "accent")
         self.empty_load_button.clicked.connect(self.load_from_empty_input)
 
+        self.empty_google_button = QPushButton("Google")
+        self.empty_google_button.setProperty("role", "nav")
+        self.empty_google_button.clicked.connect(self.load_google_page)
+
         buttons_row.addStretch(1)
         buttons_row.addWidget(self.empty_load_button)
+        buttons_row.addWidget(self.empty_google_button)
         buttons_row.addStretch(1)
 
         self.empty_error_label = QLabel("")
@@ -252,25 +307,39 @@ class WebTile(QFrame):
 
         header = QWidget()
         header.setObjectName("TileHeader")
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(8, 6, 8, 6)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(6, 4, 6, 4)
         header_layout.setSpacing(4)
+
+        compact_icon_size = QSize(28, 24)
+        compact_text_height = 24
+
+        row1 = QHBoxLayout()
+        row1.setContentsMargins(0, 0, 0, 0)
+        row1.setSpacing(4)
+        row2 = QHBoxLayout()
+        row2.setContentsMargins(0, 0, 0, 0)
+        row2.setSpacing(4)
 
         self.back_button = QPushButton("←")
         self.forward_button = QPushButton("→")
         self.reload_button = QPushButton("↻")
         self.zoom_out_button = QPushButton("-")
         self.zoom_in_button = QPushButton("+")
-        self.memory_button = QPushButton("💾")
-        self.focus_button = QPushButton("⛶")
-        self.split_button = QPushButton("⇆")
-        self.close_button = QPushButton("✕")
-        self.media_status_label = QLabel("")
-        self.media_status_label.setObjectName("SecondaryText")
-        self.media_status_label.setStyleSheet(
+        self.memory_button = QPushButton("Sauver")
+        self.focus_button = QPushButton("Focus")
+        self.split_button = QPushButton("Split")
+        self.swap_pages_button = QPushButton("⇄ Pages")
+        self.grid_interchange_button = QPushButton("↔ Grille")
+        self.close_button = QPushButton("Fermer")
+        self.google_button = QPushButton("Google")
+        self.copy_url_button = QPushButton("Copier URL")
+        self.toolbar_feedback_label = QLabel("")
+        self.toolbar_feedback_label.setObjectName("SecondaryText")
+        self.toolbar_feedback_label.setStyleSheet(
             "padding: 2px 6px; border: 1px solid #34506f; border-radius: 8px; background: #182433; font-weight: 700;"
         )
-        self.media_status_label.hide()
+        self.toolbar_feedback_label.hide()
 
         for button, tooltip, role in (
             (self.back_button, "Go back", "nav"),
@@ -278,31 +347,49 @@ class WebTile(QFrame):
             (self.reload_button, "Reload", "nav"),
             (self.zoom_out_button, "Zoom out", "zoom"),
             (self.zoom_in_button, "Zoom in", "zoom"),
-            (self.memory_button, "Save this tile", "memory"),
-            (self.focus_button, "Open this tile in focus mode", "accent"),
-            (self.split_button, "Split this focused page", "accent"),
-            (self.close_button, "Close this tile", "danger"),
         ):
-            self._configure_toolbar_button(button, tooltip, role)
+            self._configure_toolbar_button(button, tooltip, role, fixed_size=compact_icon_size)
+
+        for button, tooltip, role, min_width in (
+            (self.memory_button, "Save this tile", "memory", 72),
+            (self.focus_button, "Open this tile in focus mode", "accent", 58),
+            (self.split_button, "Split this focused page", "accent", 58),
+            (self.swap_pages_button, "Interchanger les deux pages du split", "accent", 92),
+            (self.grid_interchange_button, "Interchange de la grille", "nav", 92),
+            (self.close_button, "Close this tile", "danger", 62),
+            (self.google_button, "Ouvrir Google", "nav", 62),
+            (self.copy_url_button, "Copier l'URL affichée", "nav", 86),
+        ):
+            self._configure_toolbar_button(button, tooltip, role, fixed_size=None)
+            button.setMinimumHeight(compact_text_height)
+            button.setMinimumWidth(min_width)
 
         self.browser_url_edit = QLineEdit()
         self.browser_url_edit.setObjectName("BrowserUrlEdit")
         self.browser_url_edit.setPlaceholderText("Page address")
-        self.browser_url_edit.setFixedHeight(URL_BAR_HEIGHT)
+        self.browser_url_edit.setFixedHeight(24)
         self.browser_url_edit.setMinimumWidth(90)
         self.browser_url_edit.returnPressed.connect(self.load_from_browser_input)
 
-        header_layout.addWidget(self.back_button)
-        header_layout.addWidget(self.forward_button)
-        header_layout.addWidget(self.reload_button)
-        header_layout.addWidget(self.zoom_out_button)
-        header_layout.addWidget(self.zoom_in_button)
-        header_layout.addWidget(self.browser_url_edit, 1)
-        header_layout.addWidget(self.media_status_label)
-        header_layout.addWidget(self.memory_button)
-        header_layout.addWidget(self.focus_button)
-        header_layout.addWidget(self.split_button)
-        header_layout.addWidget(self.close_button)
+        row1.addWidget(self.back_button)
+        row1.addWidget(self.forward_button)
+        row1.addWidget(self.reload_button)
+        row1.addWidget(self.browser_url_edit, 1)
+        row1.addWidget(self.google_button)
+        row1.addWidget(self.copy_url_button)
+        row1.addWidget(self.toolbar_feedback_label)
+
+        row2.addWidget(self.zoom_out_button)
+        row2.addWidget(self.zoom_in_button)
+        row2.addWidget(self.memory_button)
+        row2.addWidget(self.focus_button)
+        row2.addWidget(self.split_button)
+        row2.addWidget(self.swap_pages_button)
+        row2.addWidget(self.grid_interchange_button)
+        row2.addWidget(self.close_button)
+
+        header_layout.addLayout(row1)
+        header_layout.addLayout(row2)
 
         self.error_banner = QLabel("")
         self.error_banner.setObjectName("ErrorBanner")
@@ -330,6 +417,10 @@ class WebTile(QFrame):
         self.memory_button.clicked.connect(lambda: self.memory_requested.emit(self.tile_id))
         self.focus_button.clicked.connect(self._on_focus_button_clicked)
         self.split_button.clicked.connect(self._on_split_button_clicked)
+        self.swap_pages_button.clicked.connect(lambda: self.split_interchange_requested.emit(self.tile_id))
+        self.grid_interchange_button.clicked.connect(lambda: self.grid_interchange_requested.emit(self.tile_id))
+        self.google_button.clicked.connect(self.load_google_page)
+        self.copy_url_button.clicked.connect(self.copy_displayed_url)
         self.close_button.clicked.connect(self.reset_to_empty)
 
         self._page.loadStarted.connect(self._on_load_started)
@@ -1537,6 +1628,7 @@ class WebTile(QFrame):
             self._state.error_message = ""
             self.clear_errors()
             self._install_media_probe()
+            self.request_browser_focus()
         else:
             self._state.status = TileVisualStatus.ERROR
             self._state.error_message = "The page failed to load."
@@ -1786,9 +1878,9 @@ class WebTile(QFrame):
 
         if self._browser_container is None:
             return
-        self.media_status_label.setText(text)
-        self.media_status_label.setToolTip(tooltip)
-        self.media_status_label.setVisible(bool(text))
+        self.media_banner.setText(text)
+        self.media_banner.setToolTip(tooltip)
+        self.media_banner.setVisible(bool(text))
 
     def _classify_media_error(self, error_name: str, error_message: str) -> str:
         if error_name == "NotAllowedError":

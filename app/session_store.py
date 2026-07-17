@@ -6,7 +6,7 @@ import tempfile
 from typing import Any
 
 from app.config import session_file_path
-from app.state import AppState
+from app.state import AppState, derive_slot_to_tile_id, derive_tile_id_to_slot, normalize_slot_to_tile_id
 
 
 def load_session_payload() -> dict[str, Any] | None:
@@ -81,15 +81,20 @@ def serialize_app_state(app_state: AppState) -> dict[str, Any]:
             "height": app_state.window_size.height(),
         }
 
+    slot_to_tile_id = normalize_slot_to_tile_id(app_state.slot_to_tile_id)
+    tile_id_to_slot = derive_tile_id_to_slot(slot_to_tile_id)
+
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "focused_tile_id": app_state.focused_tile_id,
         "is_fullscreen": app_state.is_fullscreen,
         "current_page_index": app_state.current_page_index,
         "active_view": app_state.active_view,
         "last_selected_tile_id": app_state.last_selected_tile_id,
         "split_panel_visible": app_state.split_panel_visible,
+        "bridge_target_tile_id": app_state.bridge_target_tile_id,
+        "slot_to_tile_id": slot_to_tile_id,
+        "tile_id_to_slot": tile_id_to_slot,
         "window": window_payload,
-        "tile_positions": list(app_state.tile_positions),
         "tiles": tiles_payload,
     }

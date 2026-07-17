@@ -49,12 +49,14 @@ from app.jules_summary import (
 )
 from app.session_store import load_session_payload, save_session_payload, serialize_app_state
 from app.state import AppState, TileState
+from app.state import derive_slot_to_tile_id, derive_tile_id_to_slot, normalize_slot_to_tile_id, swap_slot_order
 from app.terminal import TerminalRuntime
 from app.web_media import WebMediaPermissionController
 from app.web_profile import build_shared_profile
 from app.widgets.dashboard_grid import DashboardGrid
 from app.widgets.arena_workspace import ArenaWorkspace
 from app.widgets.focus_view import FocusView
+from app.widgets.pages_bridge_workspace import PagesBridgeWorkspace
 from app.widgets.page_matrix import PageMatrix
 from app.widgets.run_workspace import RunWorkspace
 from app.widgets.terminal_workspace import TerminalWorkspace
@@ -101,6 +103,7 @@ class MainWindow(QMainWindow):
         self._split_tile_id: int | None = None
         self._split_pairs: dict[int, int] = {}
         self._last_selected_tile_id: int = 0
+        self._grid_interchange_source_tile_id: int | None = None
         self._jules_summary_watcher: QFileSystemWatcher | None = None
         self._jules_summary_timer: QTimer | None = None
         self._chatgpt_bridge_watcher: QFileSystemWatcher | None = None
@@ -108,6 +111,10 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._build_tiles()
+        self.pages_workspace = PagesBridgeWorkspace(self.tiles, self.app_state, self.arena_controller)
+        self.pages_workspace.back_requested.connect(self.return_from_pages_bridge_page)
+        self.pages_workspace.state_changed.connect(self.schedule_session_save)
+        self.main_stack.insertWidget(1, self.pages_workspace)
         self._restore_session()
         self._sync_focus_flags()
         self._refresh_top_state()
@@ -174,6 +181,11 @@ class MainWindow(QMainWindow):
         controls_row2.setContentsMargins(0, 0, 0, 0)
         controls_row2.setSpacing(4)
 
+        self.pages_button = QPushButton("Pages")
+        self.pages_button.setProperty("compact", True)
+        self.pages_button.setProperty("role", "nav")
+        self.pages_button.clicked.connect(self.show_pages_bridge_page)
+
         self.arena_button = QPushButton("ARÈNE")
         self.arena_button.setProperty("compact", True)
         self.arena_button.setProperty("role", "arena")
@@ -191,6 +203,7 @@ class MainWindow(QMainWindow):
         self.media_permissions_button.setProperty("compact", True)
         self.media_permissions_button.clicked.connect(self.open_media_permissions_panel)
 
+        controls_row1.addWidget(self.pages_button)
         controls_row1.addWidget(self.arena_button)
         controls_row1.addWidget(self.media_permissions_button)
         controls_row2.addWidget(self.focus_exit_button)
@@ -246,11 +259,13 @@ class MainWindow(QMainWindow):
             tile.focus_requested.connect(self.enter_focus_mode)
             tile.grid_requested.connect(self.exit_focus_mode)
             tile.split_requested.connect(self.toggle_split_panel_for_focused_tile)
+            tile.grid_interchange_requested.connect(self.begin_grid_interchange)
+            tile.split_interchange_requested.connect(self.swap_split_pages)
             self.web_media_controller.attach_tile(tile)
             self.tiles[tile_id] = tile
 
             page_index = self._tile_page_index(tile_id)
-            slot_index = tile_id % TILES_PER_PAGE
+            slot_index = self._tile_slot_index(tile_id) % TILES_PER_PAGE
             self.page_grids[page_index].place_tile(tile, slot_index)
 
     def _command_tile_id(self, tile_number: int | None) -> int:
@@ -277,7 +292,8 @@ class MainWindow(QMainWindow):
             "is_fullscreen": self.app_state.is_fullscreen,
             "last_selected_tile_id": self._last_selected_tile_id,
             "split_panel_visible": self.focus_view.is_split_panel_visible(),
-            "tile_positions": list(self.app_state.tile_positions),
+            "slot_to_tile_id": list(self.app_state.slot_to_tile_id),
+            "tile_id_to_slot": list(self.app_state.tile_id_to_slot),
             "tiles": [
                 {
                     "tile_id": tile.tile_id,
@@ -688,9 +704,9 @@ class MainWindow(QMainWindow):
         return result
 
     def _tile_slot_index(self, tile_id: int) -> int:
-        if 0 <= tile_id < len(self.app_state.tile_positions):
+        if 0 <= tile_id < len(self.app_state.tile_id_to_slot):
             try:
-                slot_index = int(self.app_state.tile_positions[tile_id])
+                slot_index = int(self.app_state.tile_id_to_slot[tile_id])
             except (TypeError, ValueError):
                 slot_index = tile_id
             if 0 <= slot_index < TILE_COUNT:
@@ -699,12 +715,13 @@ class MainWindow(QMainWindow):
 
     def _tile_id_for_slot(self, slot_index: int) -> int:
         slot_index = max(0, min(TILE_COUNT - 1, slot_index))
-        for tile_id, tile_slot in enumerate(self.app_state.tile_positions):
+        if 0 <= slot_index < len(self.app_state.slot_to_tile_id):
             try:
-                if int(tile_slot) == slot_index:
-                    return tile_id
+                tile_id = int(self.app_state.slot_to_tile_id[slot_index])
             except (TypeError, ValueError):
-                continue
+                tile_id = slot_index
+            if tile_id in self.tiles:
+                return tile_id
         return slot_index
 
     def _slot_states(self) -> list[TileState]:
@@ -731,45 +748,16 @@ class MainWindow(QMainWindow):
 
     def _tile_positions_from_payload(self, payload: dict[str, object]) -> list[int]:
         default_positions = list(range(TILE_COUNT))
-
-        raw_positions = payload.get("tile_positions")
-        if raw_positions is None:
-            raw_positions = payload.get("positions")
-
-        if raw_positions is None and isinstance(payload.get("slot_order"), list):
-            slot_order = payload.get("slot_order")
-            assert isinstance(slot_order, list)
-            if len(slot_order) != TILE_COUNT:
-                return default_positions
-
-            positions = [-1] * TILE_COUNT
-            seen_tiles: set[int] = set()
-            for slot_index, raw_tile_id in enumerate(slot_order):
-                try:
-                    tile_id = int(raw_tile_id)
-                except (TypeError, ValueError):
-                    return default_positions
-                if tile_id < 0 or tile_id >= TILE_COUNT or tile_id in seen_tiles:
-                    return default_positions
-                positions[tile_id] = slot_index
-                seen_tiles.add(tile_id)
-            return positions
-
-        if not isinstance(raw_positions, list) or len(raw_positions) != TILE_COUNT:
+        raw_slot_to_tile_id = payload.get("slot_to_tile_id")
+        if raw_slot_to_tile_id is None:
+            raw_tile_id_to_slot = payload.get("tile_id_to_slot")
+            if isinstance(raw_tile_id_to_slot, list) and len(raw_tile_id_to_slot) == TILE_COUNT:
+                slot_to_tile_id = derive_slot_to_tile_id(raw_tile_id_to_slot)
+                return slot_to_tile_id if slot_to_tile_id != default_positions else default_positions
             return default_positions
 
-        positions = [-1] * TILE_COUNT
-        seen_slots: set[int] = set()
-        for tile_id, raw_slot in enumerate(raw_positions):
-            try:
-                slot_index = int(raw_slot)
-            except (TypeError, ValueError):
-                return default_positions
-            if slot_index < 0 or slot_index >= TILE_COUNT or slot_index in seen_slots:
-                return default_positions
-            positions[tile_id] = slot_index
-            seen_slots.add(slot_index)
-        return positions
+        slot_to_tile_id = normalize_slot_to_tile_id(raw_slot_to_tile_id)
+        return slot_to_tile_id if slot_to_tile_id != default_positions else default_positions
 
     def _rebuild_tile_layout(self) -> None:
         main_panel = getattr(self.focus_view, "main_panel", None)
@@ -795,17 +783,24 @@ class MainWindow(QMainWindow):
         if first_tile_id not in self.tiles or second_tile_id not in self.tiles:
             return
 
-        first_slot = self._tile_slot_index(first_tile_id)
-        second_slot = self._tile_slot_index(second_tile_id)
-        if first_slot == second_slot:
+        next_slot_order = swap_slot_order(
+            list(self.app_state.slot_to_tile_id),
+            first_tile_id,
+            second_tile_id,
+        )
+        if next_slot_order == list(self.app_state.slot_to_tile_id):
             return
 
-        self.app_state.tile_positions[first_tile_id] = second_slot
-        self.app_state.tile_positions[second_tile_id] = first_slot
+        self._apply_slot_order(next_slot_order)
         self._rebuild_tile_layout()
         self._sync_focus_flags()
         self._refresh_top_state()
         self.schedule_session_save()
+
+    def _apply_slot_order(self, slot_to_tile_id: list[int]) -> None:
+        normalized = normalize_slot_to_tile_id(slot_to_tile_id)
+        self.app_state.slot_to_tile_id = normalized
+        self.app_state.tile_id_to_slot = derive_tile_id_to_slot(normalized)
 
     def move_tile_to_slot(self, tile_id: int, slot_index: int) -> None:
         if tile_id not in self.tiles:
@@ -861,6 +856,13 @@ class MainWindow(QMainWindow):
         self._refresh_top_state()
         self.schedule_session_save()
 
+    def show_pages_bridge_page(self) -> None:
+        self.app_state.active_view = "pages"
+        self.main_stack.setCurrentWidget(self.pages_workspace)
+        self.pages_workspace.refresh_view()
+        self._refresh_top_state()
+        self.schedule_session_save()
+
     def show_terminal_page(self) -> None:
         self.terminal_workspace.activate()
         self.app_state.active_view = "run"
@@ -884,12 +886,70 @@ class MainWindow(QMainWindow):
         self.tiles[target_tile_id].open_url_text(url)
         self._refresh_top_state()
 
+    def begin_grid_interchange(self, tile_id: int) -> None:
+        if tile_id not in self.tiles:
+            return
+        if self._grid_interchange_source_tile_id == tile_id:
+            self.cancel_grid_interchange()
+            return
+        self._grid_interchange_source_tile_id = tile_id
+        self.app_state.last_selected_tile_id = tile_id
+        self.mode_label.setText("Interchange — choisissez la destination")
+        self._refresh_top_state()
+        self.schedule_session_save()
+
+    def cancel_grid_interchange(self) -> None:
+        if self._grid_interchange_source_tile_id is None:
+            return
+        self._grid_interchange_source_tile_id = None
+        self._refresh_top_state()
+        self.schedule_session_save()
+
+    def swap_split_pages(self, tile_id: int) -> None:
+        if self._focused_tile_id is None or self._split_tile_id is None:
+            return
+        if tile_id != self._focused_tile_id:
+            return
+
+        primary_tile_id = self._focused_tile_id
+        secondary_tile_id = self._split_tile_id
+        if primary_tile_id == secondary_tile_id:
+            return
+
+        primary_tile = self.tiles.get(primary_tile_id)
+        secondary_tile = self.tiles.get(secondary_tile_id)
+        if primary_tile is None or secondary_tile is None:
+            return
+
+        split_sizes = self.focus_view.current_split_sizes()
+        self.focus_view.clear_main_tile_widget()
+        self.focus_view.clear_split_tile_widget()
+        self.focus_view.set_tile_widget(secondary_tile)
+        self.focus_view.set_split_tile_widget(primary_tile, split_sizes)
+
+        self._focused_tile_id = secondary_tile_id
+        self._split_tile_id = primary_tile_id
+        self.app_state.focused_tile_id = secondary_tile_id
+        self.app_state.last_selected_tile_id = secondary_tile_id
+        self.app_state.current_page_index = self._tile_page_index(secondary_tile_id)
+        self.page_stack.setCurrentIndex(self.app_state.current_page_index)
+        self._split_pairs[secondary_tile_id] = primary_tile_id
+        self._split_pairs[primary_tile_id] = secondary_tile_id
+        QTimer.singleShot(0, lambda tile=secondary_tile: tile.setFocus(Qt.FocusReason.OtherFocusReason))
+        self._sync_focus_flags()
+        self._refresh_top_state()
+        self.schedule_session_save()
+
     def return_from_terminal_page(self) -> None:
         self.terminal_workspace.refresh_runtime_status()
         self.show_tile_page(self.app_state.current_page_index)
 
     def return_from_arena_page(self) -> None:
         self.arena_workspace.refresh_view()
+        self.show_tile_page(self.app_state.current_page_index)
+
+    def return_from_pages_bridge_page(self) -> None:
+        self.pages_workspace.refresh_view()
         self.show_tile_page(self.app_state.current_page_index)
 
     def _resolve_run_backend(self) -> tuple[Path, Path, str] | None:
@@ -988,6 +1048,17 @@ class MainWindow(QMainWindow):
 
     def activate_memory_slot(self, slot_index: int) -> None:
         slot_index = max(0, min(TILE_COUNT - 1, slot_index))
+        if self._grid_interchange_source_tile_id is not None:
+            source_tile_id = self._grid_interchange_source_tile_id
+            source_slot = self._tile_slot_index(source_tile_id)
+            if slot_index == source_slot:
+                self.cancel_grid_interchange()
+                return
+            destination_tile_id = self._tile_id_for_slot(slot_index)
+            self._swap_tile_positions(source_tile_id, destination_tile_id)
+            self.cancel_grid_interchange()
+            return
+
         tile_id = self._tile_id_for_slot(slot_index)
 
         if self._focused_tile_id is not None and tile_id == self._focused_tile_id:
@@ -1227,6 +1298,9 @@ class MainWindow(QMainWindow):
         self._forget_split_pair(primary_tile_id)
 
     def _show_active_workspace(self) -> None:
+        if self.app_state.active_view == "pages":
+            self.main_stack.setCurrentWidget(self.pages_workspace)
+            return
         if self.app_state.active_view == "arena":
             self.main_stack.setCurrentWidget(self.arena_workspace)
             return
@@ -1261,6 +1335,8 @@ class MainWindow(QMainWindow):
         self.page_matrix.refresh_all_slots(slot_states)
 
     def _current_matrix_slot(self) -> int | None:
+        if self._grid_interchange_source_tile_id is not None:
+            return self._tile_slot_index(self._grid_interchange_source_tile_id)
         if self._focused_tile_id is not None:
             return self._tile_slot_index(self._focused_tile_id)
         if self.app_state.active_view == "run":
@@ -1276,7 +1352,15 @@ class MainWindow(QMainWindow):
         loading = sum(1 for tile in self.app_state.tiles if tile.is_loading)
         hot = sum(1 for tile in self.app_state.tiles if tile.memory_mb >= 700)
 
-        if self._focused_tile_id is not None:
+        if self._grid_interchange_source_tile_id is not None:
+            self.mode_label.setText("Interchange — choisissez la destination")
+        elif self.app_state.active_view == "pages":
+            self.mode_label.setText("PAGES / BRIDGE")
+        elif self.app_state.active_view == "arena":
+            self.mode_label.setText("ARÈNE")
+        elif self.app_state.active_view == "run":
+            self.mode_label.setText("Terminal")
+        elif self._focused_tile_id is not None:
             if self._split_tile_id is not None:
                 self.mode_label.setText(
                     f"Split - tile {self._focused_tile_id + 1} + tile {self._split_tile_id + 1}"
@@ -1285,10 +1369,6 @@ class MainWindow(QMainWindow):
                 self.mode_label.setText(f"Split - tile {self._focused_tile_id + 1}")
             else:
                 self.mode_label.setText(f"Focus - tile {self._focused_tile_id + 1}")
-        elif self.app_state.active_view == "run":
-            self.mode_label.setText("Terminal")
-        elif self.app_state.active_view == "arena":
-            self.mode_label.setText("ARÈNE")
         else:
             self.mode_label.setText(
                 f"Page {self.app_state.current_page_index + 1} / {PAGE_COUNT}"
@@ -1301,6 +1381,13 @@ class MainWindow(QMainWindow):
             self._current_matrix_slot(),
             run_active=self.app_state.active_view == "run",
         )
+        for button, active in (
+            (self.pages_button, self.app_state.active_view == "pages"),
+            (self.arena_button, self.app_state.active_view == "arena"),
+        ):
+            button.setProperty("active", active)
+            button.style().unpolish(button)
+            button.style().polish(button)
         arena_snapshot = None
         try:
             arena_snapshot = self.arena_controller.snapshot()
@@ -1359,8 +1446,6 @@ class MainWindow(QMainWindow):
             self.resize(width, height)
             self.app_state.window_size = self.size()
 
-        self.app_state.tile_positions = self._tile_positions_from_payload(payload)
-
         tiles_payload = payload.get("tiles")
         if isinstance(tiles_payload, list):
             for tile_payload in tiles_payload:
@@ -1376,6 +1461,7 @@ class MainWindow(QMainWindow):
                     zoom_factor = 1.0
                 self.tiles[tile_id].restore_from_session(current_url=current_url, zoom_factor=zoom_factor)
 
+        self._apply_slot_order(self._tile_positions_from_payload(payload))
         self._rebuild_tile_layout()
 
         self._last_selected_tile_id = _clamp_int(
@@ -1392,7 +1478,14 @@ class MainWindow(QMainWindow):
             0,
         )
         active_view = str(payload.get("active_view", "tiles") or "tiles")
-        self.app_state.active_view = active_view if active_view in {"tiles", "run", "arena"} else "tiles"
+        self.app_state.active_view = active_view if active_view in {"tiles", "run", "arena", "pages"} else "tiles"
+        bridge_target_tile_id_raw = payload.get("bridge_target_tile_id")
+        bridge_target_tile_id = None
+        if bridge_target_tile_id_raw is not None:
+            candidate = _clamp_int(bridge_target_tile_id_raw, 0, TILE_COUNT - 1, -1)
+            if candidate in self.tiles:
+                bridge_target_tile_id = candidate
+        self.app_state.bridge_target_tile_id = bridge_target_tile_id
 
         focused_tile_id_raw = payload.get("focused_tile_id")
         focused_tile_id = None
@@ -1411,6 +1504,8 @@ class MainWindow(QMainWindow):
             self.app_state.split_panel_visible = False
             if self.app_state.active_view == "run":
                 self.show_run_page()
+            elif self.app_state.active_view == "pages":
+                self.show_pages_bridge_page()
             elif self.app_state.active_view == "arena":
                 self.show_arena_page()
             else:
@@ -1431,7 +1526,8 @@ class MainWindow(QMainWindow):
         self.app_state.is_fullscreen = self.isFullScreen()
         self.app_state.last_selected_tile_id = self._last_selected_tile_id
         self.app_state.split_panel_visible = self.focus_view.is_split_panel_visible() if self._focused_tile_id is not None else False
-        self.app_state.tile_positions = [self._tile_slot_index(tile_id) for tile_id in range(TILE_COUNT)]
+        self.app_state.tile_id_to_slot = [self._tile_slot_index(tile_id) for tile_id in range(TILE_COUNT)]
+        self.app_state.slot_to_tile_id = [self._tile_id_for_slot(slot_index) for slot_index in range(TILE_COUNT)]
         self.app_state.tiles = [replace(tile.state) for _, tile in sorted(self.tiles.items())]
         save_session_payload(serialize_app_state(self.app_state))
 
@@ -1439,6 +1535,8 @@ class MainWindow(QMainWindow):
         self.app_state.window_size = self.size()
         if self.app_state.active_view == "run":
             self.terminal_workspace.fit_terminal()
+        elif self.app_state.active_view == "pages":
+            self.pages_workspace.refresh_view()
         elif self.app_state.active_view == "arena":
             self.arena_workspace.refresh_view()
         self.schedule_session_save()
@@ -1448,6 +1546,7 @@ class MainWindow(QMainWindow):
         self._save_timer.stop()
         self._save_session()
         self.terminal_workspace.shutdown()
+        self.pages_workspace.deleteLater()
         self.arena_workspace.deleteLater()
         self.web_media_controller.shutdown()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
