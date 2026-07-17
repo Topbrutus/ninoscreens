@@ -65,6 +65,37 @@ def build_app_stylesheet() -> str:
         border-color: #3b6e9e;
     }}
 
+    QPushButton[role="arena"], QToolButton[role="arena"] {{
+        background: #243443;
+        border-color: #51697f;
+        font-weight: 700;
+    }}
+
+    QPushButton[role="arena"][arenaState="ARENA_OFFLINE"], QToolButton[role="arena"][arenaState="ARENA_OFFLINE"] {{
+        background: #3a3f46;
+        border-color: #596575;
+    }}
+
+    QPushButton[role="arena"][arenaState="ARENA_READY"], QToolButton[role="arena"][arenaState="ARENA_READY"] {{
+        background: #1f4f55;
+        border-color: #39a2af;
+    }}
+
+    QPushButton[role="arena"][arenaState="ARENA_DEGRADED"], QToolButton[role="arena"][arenaState="ARENA_DEGRADED"] {{
+        background: #4a3f1f;
+        border-color: #d2a534;
+    }}
+
+    QPushButton[role="arena"][arenaState="ARENA_PAUSED"], QToolButton[role="arena"][arenaState="ARENA_PAUSED"] {{
+        background: #4a3f1f;
+        border-color: #f1c40f;
+    }}
+
+    QPushButton[role="arena"][arenaState="ARENA_ERROR"], QToolButton[role="arena"][arenaState="ARENA_ERROR"] {{
+        background: #4a2626;
+        border-color: #e74c3c;
+    }}
+
     QPushButton[role="memory"], QToolButton[role="memory"] {{
         background: #1f4a74;
         border-color: #4b86be;
@@ -224,6 +255,39 @@ def build_app_stylesheet() -> str:
         color: {p.error};
         font-weight: 600;
         padding: 2px 4px;
+    }}
+
+    QLabel[role="statusBadge"] {{
+        background: #28313d;
+        border: 1px solid {p.panel_border};
+        border-radius: 8px;
+        padding: 4px 10px;
+        font-weight: 700;
+    }}
+
+    QLabel[role="statusBadge"][arenaState="ARENA_OFFLINE"] {{
+        background: #3a3f46;
+        border-color: #596575;
+    }}
+
+    QLabel[role="statusBadge"][arenaState="ARENA_READY"] {{
+        background: #1f4f55;
+        border-color: #39a2af;
+    }}
+
+    QLabel[role="statusBadge"][arenaState="ARENA_DEGRADED"] {{
+        background: #4a3f1f;
+        border-color: #d2a534;
+    }}
+
+    QLabel[role="statusBadge"][arenaState="ARENA_PAUSED"] {{
+        background: #4a3f1f;
+        border-color: #f1c40f;
+    }}
+
+    QLabel[role="statusBadge"][arenaState="ARENA_ERROR"] {{
+        background: #4a2626;
+        border-color: #e74c3c;
     }}
 
     QFrame#FocusPanel,

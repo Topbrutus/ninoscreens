@@ -34,6 +34,7 @@ from app.config import (
     app_data_root,
 )
 from app.direct_control import AgentCockpitController, AgentCommand, BlockedAction
+from app.arena_controller import ArenaController
 from app.jules_summary import (
     DEFAULT_SUMMARY_DIR,
     JulesSummary,
@@ -52,6 +53,7 @@ from app.terminal import TerminalRuntime
 from app.web_media import WebMediaPermissionController
 from app.web_profile import build_shared_profile
 from app.widgets.dashboard_grid import DashboardGrid
+from app.widgets.arena_workspace import ArenaWorkspace
 from app.widgets.focus_view import FocusView
 from app.widgets.page_matrix import PageMatrix
 from app.widgets.run_workspace import RunWorkspace
@@ -94,6 +96,7 @@ class MainWindow(QMainWindow):
         self.tiles: dict[int, WebTile] = {}
         self.page_grids: list[DashboardGrid] = []
         self.terminal_runtime = TerminalRuntime(start_dir=Path(__file__).resolve().parents[2])
+        self.arena_controller = ArenaController()
         self._focused_tile_id: int | None = None
         self._split_tile_id: int | None = None
         self._split_pairs: dict[int, int] = {}
@@ -171,11 +174,10 @@ class MainWindow(QMainWindow):
         controls_row2.setContentsMargins(0, 0, 0, 0)
         controls_row2.setSpacing(4)
 
-        self.pages_button = QPushButton("Pages")
-        self.pages_button.setProperty("compact", True)
-        self.pages_button.clicked.connect(
-            lambda: self.show_tile_page(self.app_state.current_page_index)
-        )
+        self.arena_button = QPushButton("ARÈNE")
+        self.arena_button.setProperty("compact", True)
+        self.arena_button.setProperty("role", "arena")
+        self.arena_button.clicked.connect(self.show_arena_page)
 
         self.focus_exit_button = QPushButton("Quit focus")
         self.focus_exit_button.setProperty("compact", True)
@@ -189,7 +191,7 @@ class MainWindow(QMainWindow):
         self.media_permissions_button.setProperty("compact", True)
         self.media_permissions_button.clicked.connect(self.open_media_permissions_panel)
 
-        controls_row1.addWidget(self.pages_button)
+        controls_row1.addWidget(self.arena_button)
         controls_row1.addWidget(self.media_permissions_button)
         controls_row2.addWidget(self.focus_exit_button)
         controls_layout.addLayout(controls_row1)
@@ -224,11 +226,15 @@ class MainWindow(QMainWindow):
         self.terminal_workspace.back_requested.connect(self.return_from_terminal_page)
         self.page_stack.addWidget(self.terminal_workspace)
 
+        self.arena_workspace = ArenaWorkspace(self.arena_controller)
+        self.arena_workspace.back_requested.connect(self.return_from_arena_page)
+
         self.focus_view = FocusView()
         self.focus_view.tile_switch_requested.connect(self.set_split_tile)
         self.focus_view.split_visibility_changed.connect(self._on_split_visibility_changed)
 
         self.main_stack.addWidget(self.page_stack)
+        self.main_stack.addWidget(self.arena_workspace)
         self.main_stack.addWidget(self.focus_view)
         root.addWidget(self.main_stack, 1)
 
@@ -848,6 +854,13 @@ class MainWindow(QMainWindow):
         self._refresh_top_state()
         self.schedule_session_save()
 
+    def show_arena_page(self) -> None:
+        self.app_state.active_view = "arena"
+        self.main_stack.setCurrentWidget(self.arena_workspace)
+        self.arena_workspace.refresh_view()
+        self._refresh_top_state()
+        self.schedule_session_save()
+
     def show_terminal_page(self) -> None:
         self.terminal_workspace.activate()
         self.app_state.active_view = "run"
@@ -872,6 +885,10 @@ class MainWindow(QMainWindow):
 
     def return_from_terminal_page(self) -> None:
         self.terminal_workspace.refresh_runtime_status()
+        self.show_tile_page(self.app_state.current_page_index)
+
+    def return_from_arena_page(self) -> None:
+        self.arena_workspace.refresh_view()
         self.show_tile_page(self.app_state.current_page_index)
 
     def _resolve_run_backend(self) -> tuple[Path, Path, str] | None:
@@ -1209,6 +1226,10 @@ class MainWindow(QMainWindow):
         self._forget_split_pair(primary_tile_id)
 
     def _show_active_workspace(self) -> None:
+        if self.app_state.active_view == "arena":
+            self.main_stack.setCurrentWidget(self.arena_workspace)
+            return
+
         self.main_stack.setCurrentWidget(self.page_stack)
         if self.app_state.active_view == "run":
             self.page_stack.setCurrentIndex(RUN_PAGE_INDEX)
@@ -1265,6 +1286,8 @@ class MainWindow(QMainWindow):
                 self.mode_label.setText(f"Focus - tile {self._focused_tile_id + 1}")
         elif self.app_state.active_view == "run":
             self.mode_label.setText("Terminal")
+        elif self.app_state.active_view == "arena":
+            self.mode_label.setText("ARÈNE")
         else:
             self.mode_label.setText(
                 f"Page {self.app_state.current_page_index + 1} / {PAGE_COUNT}"
@@ -1277,6 +1300,17 @@ class MainWindow(QMainWindow):
             self._current_matrix_slot(),
             run_active=self.app_state.active_view == "run",
         )
+        arena_snapshot = None
+        try:
+            arena_snapshot = self.arena_controller.snapshot()
+        except Exception:
+            arena_snapshot = None
+        if arena_snapshot is not None:
+            arena_state = str(arena_snapshot.get("arena_state", "ARENA_OFFLINE"))
+            self.arena_button.setProperty("arenaState", arena_state)
+            self.arena_button.setToolTip(f"Arène: {arena_state}")
+            self.arena_button.style().unpolish(self.arena_button)
+            self.arena_button.style().polish(self.arena_button)
         self.focus_exit_button.setEnabled(self._focused_tile_id is not None)
 
     def _on_split_visibility_changed(self, visible: bool) -> None:
@@ -1357,7 +1391,7 @@ class MainWindow(QMainWindow):
             0,
         )
         active_view = str(payload.get("active_view", "tiles") or "tiles")
-        self.app_state.active_view = active_view if active_view in {"tiles", "run"} else "tiles"
+        self.app_state.active_view = active_view if active_view in {"tiles", "run", "arena"} else "tiles"
 
         focused_tile_id_raw = payload.get("focused_tile_id")
         focused_tile_id = None
@@ -1376,6 +1410,8 @@ class MainWindow(QMainWindow):
             self.app_state.split_panel_visible = False
             if self.app_state.active_view == "run":
                 self.show_run_page()
+            elif self.app_state.active_view == "arena":
+                self.show_arena_page()
             else:
                 self.show_tile_page(self.app_state.current_page_index)
 
@@ -1402,6 +1438,8 @@ class MainWindow(QMainWindow):
         self.app_state.window_size = self.size()
         if self.app_state.active_view == "run":
             self.terminal_workspace.fit_terminal()
+        elif self.app_state.active_view == "arena":
+            self.arena_workspace.refresh_view()
         self.schedule_session_save()
         super().resizeEvent(event)
 
@@ -1409,6 +1447,7 @@ class MainWindow(QMainWindow):
         self._save_timer.stop()
         self._save_session()
         self.terminal_workspace.shutdown()
+        self.arena_workspace.deleteLater()
         self.web_media_controller.shutdown()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         super().closeEvent(event)
