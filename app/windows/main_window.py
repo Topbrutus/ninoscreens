@@ -892,7 +892,7 @@ class MainWindow(QMainWindow):
         self.main_stack.setCurrentWidget(self.pages_workspace)
         if self._restoring_session:
             return
-        self.pages_workspace.refresh_view()
+        self.pages_workspace.activate()
         self._refresh_top_state()
         self.schedule_session_save()
 
@@ -982,7 +982,7 @@ class MainWindow(QMainWindow):
         self.show_tile_page(self.app_state.current_page_index)
 
     def return_from_pages_bridge_page(self) -> None:
-        self.pages_workspace.refresh_view()
+        self.pages_workspace.refresh_from_cache()
         self.show_tile_page(self.app_state.current_page_index)
 
     def _resolve_run_backend(self) -> tuple[Path, Path, str] | None:
@@ -1608,6 +1608,7 @@ class MainWindow(QMainWindow):
         self._save_timer.stop()
         self._save_session()
         self.terminal_workspace.shutdown()
+        self.pages_workspace.shutdown()
         self.pages_workspace.deleteLater()
         self.arena_workspace.deleteLater()
         self.web_media_controller.shutdown()
