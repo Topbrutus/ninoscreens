@@ -31,14 +31,23 @@ def _make_snapshot() -> dict[str, object]:
 
 
 class _FakeTile:
-    def __init__(self, tile_id: int) -> None:
+    def __init__(
+        self,
+        tile_id: int,
+        *,
+        title: str | None = None,
+        current_url: str = "",
+        status: TileVisualStatus = TileVisualStatus.EMPTY,
+        is_loading: bool = False,
+        has_content: bool = False,
+    ) -> None:
         self.tile_id = tile_id
         self.state = SimpleNamespace(
-            display_title=f"Tile {tile_id + 1}",
-            current_url="",
-            status=TileVisualStatus.EMPTY,
-            is_loading=False,
-            has_content=False,
+            display_title=title or f"Tile {tile_id + 1}",
+            current_url=current_url,
+            status=status,
+            is_loading=is_loading,
+            has_content=has_content,
         )
 
 
@@ -66,6 +75,22 @@ class PagesBridgeWorkspaceRefreshTests(unittest.TestCase):
         app_state = SimpleNamespace(bridge_target_tile_id=None)
         workspace = PagesBridgeWorkspace(tiles, app_state, controller)
         return workspace, controller
+
+    def _set_chatgpt_tile(self, workspace: PagesBridgeWorkspace, tile_id: int, url: str = "https://chatgpt.com/") -> None:
+        tile = workspace.tiles[tile_id]
+        tile.state.display_title = "ChatGPT"
+        tile.state.current_url = url
+        tile.state.status = TileVisualStatus.READY
+        tile.state.is_loading = False
+        tile.state.has_content = True
+
+    def _set_loaded_tile(self, workspace: PagesBridgeWorkspace, tile_id: int, url: str) -> None:
+        tile = workspace.tiles[tile_id]
+        tile.state.display_title = "ChatGPT"
+        tile.state.current_url = url
+        tile.state.status = TileVisualStatus.READY
+        tile.state.is_loading = False
+        tile.state.has_content = True
 
     def test_constructing_workspace_does_not_collect(self) -> None:
         workspace, controller = self._build_workspace()
@@ -173,6 +198,124 @@ class PagesBridgeWorkspaceRefreshTests(unittest.TestCase):
 
         request_mock.assert_called_once_with(force=False)
         self.assertEqual(controller.snapshot_calls, 0)
+
+    def test_persisted_target_zero_restores_visible_target(self) -> None:
+        controller = _FakeController()
+        tiles = {tile_id: _FakeTile(tile_id) for tile_id in range(4)}
+        app_state = SimpleNamespace(bridge_target_tile_id=0)
+        tile = tiles[0]
+        tile.state.display_title = "ChatGPT"
+        tile.state.current_url = "https://chatgpt.com/"
+        tile.state.status = TileVisualStatus.READY
+        tile.state.has_content = True
+        workspace = PagesBridgeWorkspace(tiles, app_state, controller)
+
+        self.assertEqual(workspace.selected_target_value.text(), "Tile 1 • ChatGPT")
+        self.assertEqual(workspace.app_state.bridge_target_tile_id, 0)
+        self.assertIn(workspace.state_badge.text(), {"IDLE", "READY"})
+        self.assertTrue(workspace.send_button.isEnabled())
+
+    def test_no_explicit_target_with_multiple_candidates_is_ambiguous(self) -> None:
+        controller = _FakeController()
+        tiles = {tile_id: _FakeTile(tile_id) for tile_id in range(4)}
+        app_state = SimpleNamespace(bridge_target_tile_id=None)
+        for tile_id in (0, 1):
+            tiles[tile_id].state.display_title = "ChatGPT"
+            tiles[tile_id].state.current_url = "https://chatgpt.com/"
+            tiles[tile_id].state.status = TileVisualStatus.READY
+            tiles[tile_id].state.is_loading = False
+            tiles[tile_id].state.has_content = True
+        workspace = PagesBridgeWorkspace(tiles, app_state, controller)
+
+        self.assertEqual(workspace.selected_target_value.text(), "AMBIGU")
+        self.assertEqual(workspace.app_state.bridge_target_tile_id, None)
+
+    def test_explicit_invalid_target_stays_selected_and_invalid(self) -> None:
+        controller = _FakeController()
+        tiles = {tile_id: _FakeTile(tile_id) for tile_id in range(4)}
+        app_state = SimpleNamespace(bridge_target_tile_id=0)
+        tiles[0].state.display_title = "ChatGPT"
+        tiles[0].state.current_url = "https://example.com/"
+        tiles[0].state.status = TileVisualStatus.READY
+        tiles[0].state.is_loading = False
+        tiles[0].state.has_content = True
+        workspace = PagesBridgeWorkspace(tiles, app_state, controller)
+
+        self.assertEqual(workspace.selected_target_value.text(), "Tile 1 • INVALIDE")
+        self.assertEqual(workspace.app_state.bridge_target_tile_id, 0)
+        self.assertEqual(workspace.state_badge.text(), "ERROR")
+        self.assertFalse(workspace.send_button.isEnabled())
+
+    def test_valid_refresh_stores_last_valid_snapshot(self) -> None:
+        workspace, _controller = self._build_workspace()
+        self._set_chatgpt_tile(workspace, 0)
+        workspace.app_state.bridge_target_tile_id = 0
+        workspace.sync_target_from_state()
+        snapshot = _make_snapshot()
+        workspace._refresh_generation = 1
+        workspace._active_generation = 1
+        workspace._refresh_in_progress = True
+        workspace._refresh_requested = False
+
+        workspace._on_refresh_snapshot_ready(1, snapshot)
+
+        self.assertEqual(workspace._cached_snapshot, snapshot)
+        self.assertEqual(workspace._last_valid_snapshot, snapshot)
+        self.assertEqual(workspace.state_badge.text(), "READY")
+        self.assertTrue(workspace.send_button.isEnabled())
+
+    def test_invalid_refresh_preserves_last_valid_snapshot(self) -> None:
+        workspace, _controller = self._build_workspace()
+        self._set_chatgpt_tile(workspace, 0)
+        workspace.app_state.bridge_target_tile_id = 0
+        workspace.sync_target_from_state()
+        valid_snapshot = _make_snapshot()
+        workspace._set_last_valid_snapshot(valid_snapshot)
+        workspace._refresh_generation = 2
+        workspace._active_generation = 2
+        workspace._refresh_in_progress = True
+        workspace._refresh_requested = False
+
+        self._set_loaded_tile(workspace, 0, "https://example.com/")
+        invalid_snapshot = _make_snapshot()
+        invalid_snapshot["workers_active"] = 1
+
+        workspace._on_refresh_snapshot_ready(2, invalid_snapshot)
+
+        self.assertEqual(workspace._cached_snapshot, valid_snapshot)
+        self.assertEqual(workspace._last_valid_snapshot, valid_snapshot)
+        self.assertEqual(workspace.state_badge.text(), "DEGRADED")
+        self.assertIn("example.com", workspace.last_block_value.text())
+        self.assertFalse(workspace.send_button.isEnabled())
+
+    def test_recovery_to_chatgpt_returns_ready_and_updates_cache(self) -> None:
+        workspace, _controller = self._build_workspace()
+        self._set_loaded_tile(workspace, 0, "https://example.com/")
+        workspace.app_state.bridge_target_tile_id = 0
+        workspace.sync_target_from_state()
+        invalid_snapshot = _make_snapshot()
+        workspace._set_last_valid_snapshot(_make_snapshot())
+        workspace._refresh_generation = 2
+        workspace._active_generation = 2
+        workspace._refresh_in_progress = True
+        workspace._refresh_requested = False
+        workspace._on_refresh_snapshot_ready(2, invalid_snapshot)
+
+        self._set_chatgpt_tile(workspace, 0)
+        workspace.sync_target_from_state()
+        ready_snapshot = _make_snapshot()
+        ready_snapshot["workers_active"] = 3
+        workspace._refresh_generation = 3
+        workspace._active_generation = 3
+        workspace._refresh_in_progress = True
+        workspace._refresh_requested = False
+        workspace._on_refresh_snapshot_ready(3, ready_snapshot)
+
+        self.assertEqual(workspace._cached_snapshot, ready_snapshot)
+        self.assertEqual(workspace._last_valid_snapshot, ready_snapshot)
+        self.assertEqual(workspace.state_badge.text(), "READY")
+        self.assertEqual(workspace.selected_target_value.text(), "Tile 1 • ChatGPT")
+        self.assertTrue(workspace.send_button.isEnabled())
 
 
 if __name__ == "__main__":

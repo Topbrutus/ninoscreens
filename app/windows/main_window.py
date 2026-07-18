@@ -846,6 +846,8 @@ class MainWindow(QMainWindow):
         if self._restoring_session:
             return
 
+        if self.app_state.active_view == "pages":
+            self.pages_workspace.refresh_target_display()
         self.focus_view.refresh_slots(self.app_state.tiles, self._focused_tile_id)
         slot_states = self._slot_states()
         self.page_matrix.set_split_pairs(self._slot_split_pairs(), slot_states)
@@ -890,7 +892,9 @@ class MainWindow(QMainWindow):
     def show_pages_bridge_page(self) -> None:
         self.app_state.active_view = "pages"
         self.main_stack.setCurrentWidget(self.pages_workspace)
+        self.pages_workspace.sync_target_from_state()
         if self._restoring_session:
+            self.pages_workspace.refresh_from_cache()
             return
         self.pages_workspace.activate()
         self._refresh_top_state()
@@ -982,6 +986,7 @@ class MainWindow(QMainWindow):
         self.show_tile_page(self.app_state.current_page_index)
 
     def return_from_pages_bridge_page(self) -> None:
+        self.pages_workspace.sync_target_from_state()
         self.pages_workspace.refresh_from_cache()
         self.show_tile_page(self.app_state.current_page_index)
 
@@ -1558,6 +1563,8 @@ class MainWindow(QMainWindow):
             self._refresh_top_state()
         finally:
             self._restoring_session = False
+        if self.app_state.active_view == "pages":
+            self.pages_workspace.request_refresh(force=False)
         self.arena_controller.request_snapshot_refresh(force=True)
 
     def _on_arena_snapshot_ready(self, snapshot: object) -> None:

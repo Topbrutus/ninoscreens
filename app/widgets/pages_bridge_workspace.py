@@ -7,6 +7,7 @@ import uuid
 import time
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
@@ -102,10 +103,19 @@ class PagesBridgeWorkspace(QFrame):
         self._active_generation = 0
         self._pending_generation = 0
         self._cached_snapshot: dict[str, Any] | None = None
+        self._last_valid_snapshot: dict[str, Any] | None = None
+        self._current_refresh_result: dict[str, Any] | None = None
         self._cached_snapshot_at = 0.0
         self._refresh_in_progress = False
         self._refresh_requested = False
         self._refresh_error = ""
+        self._current_error = ""
+        self._current_target_validation: dict[str, Any] = {
+            "status": "NOT_CONFIGURED",
+            "is_valid": False,
+            "message": "",
+            "label": "AMBIGU",
+        }
         self._refresh_started_at = 0.0
         self._refresh_debounce_ms = 75
         self._refresh_timeout_ms = 15000
@@ -291,9 +301,11 @@ class PagesBridgeWorkspace(QFrame):
         self.view_response_button.clicked.connect(self.view_last_response)
         self.view_report_button.clicked.connect(self.view_job_report)
 
+        self.sync_target_from_state()
         self.refresh_from_cache()
 
     def activate(self) -> bool:
+        self.sync_target_from_state()
         self.refresh_from_cache()
         if not self._refresh_shutdown and not self._refresh_requested and not self._refresh_in_progress:
             self.request_refresh(force=False)
@@ -311,6 +323,20 @@ class PagesBridgeWorkspace(QFrame):
         self._sync_selection_widgets()
         self._refresh_result_view()
         self._render_cached_snapshot()
+
+    def refresh_target_display(self) -> None:
+        self._populate_table()
+        self._sync_selection_widgets()
+        self._render_cached_snapshot()
+
+    def set_target_tile_id(self, tile_id: int | None) -> None:
+        self._selected_tile_id = tile_id
+        self.app_state.bridge_target_tile_id = tile_id
+        self.refresh_target_display()
+
+    def sync_target_from_state(self) -> None:
+        self._selected_tile_id = self.app_state.bridge_target_tile_id
+        self.refresh_target_display()
 
     def request_refresh(self, *, force: bool = False) -> bool:
         if self._refresh_shutdown:
@@ -360,8 +386,7 @@ class PagesBridgeWorkspace(QFrame):
         if tile_id not in self.tiles:
             self._append_result(f"Cible invalide: tile {tile_id + 1}.")
             return
-        self._selected_tile_id = tile_id
-        self.app_state.bridge_target_tile_id = tile_id
+        self.set_target_tile_id(tile_id)
         if not self.session_edit.text().strip() or self.session_edit.text().startswith("SESSION-UNASSIGNED"):
             self.session_edit.setText(f"SESSION-TILE-{tile_id + 1:02d}")
         self._request_counter = max(self._request_counter, 0)
@@ -369,12 +394,24 @@ class PagesBridgeWorkspace(QFrame):
             f"CIBLE_VALIDEE: tile {tile_id + 1} ({self.tiles[tile_id].state.display_title})."
         )
         self.state_changed.emit()
-        self.refresh_view()
+        self.refresh_from_cache()
 
-    def test_selected_target(self) -> None:
+    def _require_valid_selected_tile(self, blocked_message: str) -> WebTile | None:
+        validation = self._validate_selected_target()
+        self._current_target_validation = validation
+        if not validation.get("is_valid"):
+            message = str(validation.get("message", "") or blocked_message)
+            self._append_result(f"BLOCKED: {message}")
+            return None
         tile = self._selected_tile()
         if tile is None:
-            self._append_result("BLOCKED: cible ChatGPT non sélectionnée.")
+            self._append_result(f"BLOCKED: {blocked_message}")
+            return None
+        return tile
+
+    def test_selected_target(self) -> None:
+        tile = self._require_valid_selected_tile("Cible ChatGPT non sélectionnée.")
+        if tile is None:
             return
         result = tile.read_chatgpt_assistant_state()
         self._last_result = {
@@ -386,9 +423,8 @@ class PagesBridgeWorkspace(QFrame):
         self.state_changed.emit()
 
     def prepare_draft_only(self) -> None:
-        tile = self._selected_tile()
+        tile = self._require_valid_selected_tile("Cible ChatGPT non sélectionnée.")
         if tile is None:
-            self._append_result("BLOCKED: cible ChatGPT non sélectionnée.")
             return
         draft = self._build_request_payload(tile, mode="no-enter")
         self._draft_payload = draft
@@ -398,9 +434,8 @@ class PagesBridgeWorkspace(QFrame):
         self.refresh_view()
 
     def send_current_draft(self) -> None:
-        tile = self._selected_tile()
+        tile = self._require_valid_selected_tile("Cible ChatGPT non sélectionnée.")
         if tile is None:
-            self._append_result("BLOCKED: cible ChatGPT non sélectionnée.")
             return
 
         mode = self.mode_combo.currentText().strip().lower()
@@ -460,6 +495,116 @@ class PagesBridgeWorkspace(QFrame):
         self._last_result = {"action": "report", "report": report}
         self._append_result(json.dumps(self._last_result, ensure_ascii=False, indent=2))
 
+    def _set_current_error(self, message: str) -> None:
+        self._current_error = message
+        self._refresh_error = message
+
+    def _set_last_valid_snapshot(self, snapshot: dict[str, Any] | None) -> None:
+        if snapshot is None:
+            self._cached_snapshot = None
+            self._last_valid_snapshot = None
+            return
+        copied = deepcopy(snapshot)
+        self._cached_snapshot = copied
+        self._last_valid_snapshot = copied
+        self._cached_snapshot_at = time.monotonic()
+
+    def _is_chatgpt_origin(self, raw_url: str) -> bool:
+        clean_url = raw_url.strip()
+        if not clean_url:
+            return False
+        parsed = urlsplit(clean_url)
+        hostname = (parsed.hostname or "").lower()
+        return parsed.scheme == "https" and hostname == "chatgpt.com"
+
+    def _chatgpt_candidate_count(self) -> int:
+        count = 0
+        for tile in self.tiles.values():
+            state = tile.state
+            if not bool(getattr(state, "has_content", False)):
+                continue
+            if bool(getattr(state, "is_loading", False)):
+                continue
+            current_url = str(getattr(state, "current_url", "") or "").strip()
+            if current_url and self._is_chatgpt_origin(current_url):
+                count += 1
+        return count
+
+    def _validate_selected_target(self) -> dict[str, Any]:
+        tile_id = self._selected_tile_id
+        if tile_id is None:
+            return {
+                "status": "NOT_CONFIGURED",
+                "is_valid": False,
+                "message": "",
+                "label": "AMBIGU",
+            }
+
+        tile = self.tiles.get(tile_id)
+        tile_number = tile_id + 1
+        if tile is None:
+            return {
+                "status": "INVALID_TILE",
+                "is_valid": False,
+                "message": f"Cible explicite invalide: Tile {tile_number} n'existe plus.",
+                "label": f"Tile {tile_number} • INVALIDE",
+            }
+
+        state = tile.state
+        current_url = str(getattr(state, "current_url", "") or "").strip()
+        has_content = bool(getattr(state, "has_content", False))
+        is_loading = bool(getattr(state, "is_loading", False))
+        status_value = getattr(state, "status", TileVisualStatus.EMPTY)
+
+        if not has_content:
+            return {
+                "status": "NOT_LOADED",
+                "is_valid": False,
+                "message": f"Cible explicite invalide: Tile {tile_number} n'est pas chargée.",
+                "label": f"Tile {tile_number} • INVALIDE",
+            }
+
+        if is_loading or status_value == TileVisualStatus.LOADING:
+            return {
+                "status": "NOT_LOADED",
+                "is_valid": False,
+                "message": f"Cible explicite invalide: Tile {tile_number} est encore en chargement.",
+                "label": f"Tile {tile_number} • INVALIDE",
+            }
+
+        if not current_url:
+            return {
+                "status": "PAGE_UNAVAILABLE",
+                "is_valid": False,
+                "message": f"Cible explicite invalide: Tile {tile_number} n'a pas d'URL actuelle.",
+                "label": f"Tile {tile_number} • INVALIDE",
+            }
+
+        if not self._is_chatgpt_origin(current_url):
+            return {
+                "status": "WRONG_ORIGIN",
+                "is_valid": False,
+                "message": (
+                    f"Cible explicite invalide: Tile {tile_number} pointe vers une origine non autorisée ({current_url})."
+                ),
+                "label": f"Tile {tile_number} • INVALIDE",
+            }
+
+        if status_value not in {TileVisualStatus.READY, TileVisualStatus.LOADING}:
+            return {
+                "status": "PAGE_UNAVAILABLE",
+                "is_valid": False,
+                "message": f"Cible explicite invalide: Tile {tile_number} n'est pas prête.",
+                "label": f"Tile {tile_number} • INVALIDE",
+            }
+
+        return {
+            "status": "VALID",
+            "is_valid": True,
+            "message": "",
+            "label": f"Tile {tile_number} • {state.display_title}",
+        }
+
     def _selected_tile(self) -> WebTile | None:
         if self._selected_tile_id is None:
             return None
@@ -479,20 +624,38 @@ class PagesBridgeWorkspace(QFrame):
         self.selected_target_value.setText(f"Tile {tile_id + 1} • {tile.state.display_title}")
 
     def _render_cached_snapshot(self) -> None:
-        snapshot = self._cached_snapshot
-        selected_ok = self._selected_tile_id is not None and self._selected_tile_id in self.tiles
-        has_snapshot = snapshot is not None
+        validation = self._validate_selected_target()
+        self._current_target_validation = validation
+        explicit_target = self._selected_tile_id is not None
+        candidate_count = self._chatgpt_candidate_count()
+        display_snapshot = self._cached_snapshot if self._cached_snapshot is not None else self._current_refresh_result
+        has_valid_cache = self._cached_snapshot is not None
+        has_current_result = self._current_refresh_result is not None
 
-        if not has_snapshot:
-            if self._refresh_error:
-                self._set_bridge_status("DEGRADED" if self._cached_snapshot is not None else "ERROR")
-                self.subtitle_label.setText(f"Bridge indisponible: {self._refresh_error}")
-            elif self._refresh_in_progress:
-                self._set_bridge_status("REFRESHING")
-                self.subtitle_label.setText("Initialisation…")
-            else:
-                self._set_bridge_status("IDLE")
-                self.subtitle_label.setText("Bridge en attente d'initialisation.")
+        if self._refresh_in_progress:
+            bridge_status = "REFRESHING"
+            subtitle = "Initialisation…"
+        elif self._refresh_error:
+            bridge_status = "DEGRADED" if (has_valid_cache or has_current_result) else "ERROR"
+            subtitle = f"Bridge indisponible: {self._refresh_error}"
+        elif explicit_target and not validation.get("is_valid"):
+            bridge_status = "DEGRADED" if (has_valid_cache or has_current_result) else "ERROR"
+            subtitle = f"Bridge indisponible: {validation.get('message', '') or 'cible invalide'}"
+        elif display_snapshot is not None:
+            core = display_snapshot.get("core", {})
+            bridge_status = "READY"
+            subtitle = (
+                f"{display_snapshot.get('workers_active', 0)} worker(s), core "
+                f"{core.get('status', 'UNKNOWN') if isinstance(core, dict) else 'UNKNOWN'}"
+            )
+        else:
+            bridge_status = "IDLE"
+            subtitle = "Bridge en attente d'initialisation."
+
+        self._set_bridge_status(bridge_status)
+        self.subtitle_label.setText(subtitle)
+
+        if display_snapshot is None:
             _set_text(self.core_value, None)
             _set_text(self.jules_value, None)
             _set_text(self.bridge_value, None)
@@ -505,44 +668,47 @@ class PagesBridgeWorkspace(QFrame):
                 if isinstance(self._last_result.get("result"), dict)
                 else self._last_result.get("action"),
             )
-            _set_text(self.last_block_value, self._refresh_error or "aucun")
-            if selected_ok:
-                tile = self.tiles[self._selected_tile_id]
-                self.selected_target_value.setText(f"Tile {tile.tile_id + 1} • {tile.state.display_title}")
+            _set_text(self.last_block_value, validation.get("message") or self._refresh_error or "aucun")
+            if explicit_target:
+                target_label = validation.get("label", "AMBIGU")
+            elif candidate_count > 1:
+                target_label = "AMBIGU"
             else:
-                self.selected_target_value.setText("AMBIGU")
+                target_label = "Aucune cible explicite"
+            self.selected_target_value.setText(target_label)
+            self.send_button.setEnabled(bool(validation.get("is_valid")))
             return
 
-        core = snapshot.get("core", {})
+        core = display_snapshot.get("core", {})
         jules = core.get("jules", {}) if isinstance(core, dict) else {}
         bridge = core.get("bridge", {}) if isinstance(core, dict) else {}
-        self.subtitle_label.setText(
-            f"{snapshot.get('workers_active', 0)} worker(s), core {core.get('status', 'UNKNOWN') if isinstance(core, dict) else 'UNKNOWN'}"
-        )
         _set_text(self.core_value, core.get("status") if isinstance(core, dict) else None)
         _set_text(self.jules_value, f"{jules.get('status', 'UNKNOWN')} | PID {jules.get('pid') or 'n/a'}")
         _set_text(self.bridge_value, f"{bridge.get('status', 'UNKNOWN')} | PID {bridge.get('pid') or 'n/a'}")
-        _set_text(self.nino_value, "ACTIVE" if snapshot.get("nino_active") else "OFFLINE")
-        _set_text(self.last_job_value, snapshot.get("jobs", [])[-1]["job_id"] if snapshot.get("jobs") else None)
+        _set_text(self.nino_value, "ACTIVE" if display_snapshot.get("nino_active") else "OFFLINE")
+        _set_text(
+            self.last_job_value,
+            display_snapshot.get("jobs", [])[-1]["job_id"] if display_snapshot.get("jobs") else None,
+        )
         _set_text(self.last_request_value, self._draft_payload.get("request_id"))
         _set_text(
             self.last_status_value,
-            self._last_result.get("result", {}).get("status") if isinstance(self._last_result.get("result"), dict) else self._last_result.get("action"),
+            self._last_result.get("result", {}).get("status")
+            if isinstance(self._last_result.get("result"), dict)
+            else self._last_result.get("action"),
         )
-        _set_text(self.last_block_value, self._refresh_error or snapshot.get("d_only", {}).get("last_refusal"))
-
-        if selected_ok:
-            tile = self.tiles[self._selected_tile_id]
-            self.selected_target_value.setText(f"Tile {tile.tile_id + 1} • {tile.state.display_title}")
+        _set_text(
+            self.last_block_value,
+            self._refresh_error or validation.get("message") or display_snapshot.get("d_only", {}).get("last_refusal"),
+        )
+        if explicit_target:
+            target_label = validation.get("label", "AMBIGU")
+        elif candidate_count > 1:
+            target_label = "AMBIGU"
         else:
-            self.selected_target_value.setText("AMBIGU")
-
-        if self._refresh_in_progress:
-            self._set_bridge_status("REFRESHING")
-        elif self._refresh_error:
-            self._set_bridge_status("DEGRADED")
-        else:
-            self._set_bridge_status("READY")
+            target_label = "Aucune cible explicite"
+        self.selected_target_value.setText(target_label)
+        self.send_button.setEnabled(bool(validation.get("is_valid")))
 
     def _set_bridge_status(self, status: str) -> None:
         self.state_badge.setText(status)
@@ -583,15 +749,18 @@ class PagesBridgeWorkspace(QFrame):
                     self._refresh_debounce_timer.start()
             return
         self._finish_refresh_collection()
+        self._current_refresh_result = deepcopy(snapshot) if isinstance(snapshot, dict) else None
         if not isinstance(snapshot, dict):
-            self._refresh_error = "Bridge snapshot invalide."
-            self._set_bridge_status("ERROR")
-            self.subtitle_label.setText(self._refresh_error)
+            self._set_current_error("Bridge snapshot invalide.")
             self._render_cached_snapshot()
             return
-        self._cached_snapshot = deepcopy(snapshot)
-        self._cached_snapshot_at = time.monotonic()
-        self._refresh_error = ""
+        validation = self._validate_selected_target()
+        self._current_target_validation = validation
+        if validation.get("is_valid"):
+            self._set_last_valid_snapshot(snapshot)
+            self._set_current_error("")
+        else:
+            self._set_current_error(str(validation.get("message", "") or "Cible Bridge invalide."))
         self._render_cached_snapshot()
         self._refresh_result_view()
         if self._pending_generation > generation:
@@ -608,12 +777,8 @@ class PagesBridgeWorkspace(QFrame):
                     self._refresh_debounce_timer.start()
             return
         self._finish_refresh_collection()
-        self._refresh_error = message or "Bridge snapshot failed."
-        if self._cached_snapshot is None:
-            self._set_bridge_status("ERROR")
-        else:
-            self._set_bridge_status("DEGRADED")
-        self.subtitle_label.setText(f"Bridge indisponible: {self._refresh_error}")
+        self._current_refresh_result = None
+        self._set_current_error(message or "Bridge snapshot failed.")
         self._render_cached_snapshot()
         if self._pending_generation > generation:
             self._refresh_requested = True
@@ -631,12 +796,8 @@ class PagesBridgeWorkspace(QFrame):
         else:
             self._refresh_requested = True
             self._refresh_debounce_timer.start()
-        self._refresh_error = "Bridge refresh timed out."
-        if self._cached_snapshot is None:
-            self._set_bridge_status("ERROR")
-        else:
-            self._set_bridge_status("DEGRADED")
-        self.subtitle_label.setText(f"Bridge indisponible: {self._refresh_error}")
+        self._current_refresh_result = None
+        self._set_current_error("Bridge refresh timed out.")
         self._render_cached_snapshot()
 
     def _populate_table(self) -> None:
@@ -670,13 +831,9 @@ class PagesBridgeWorkspace(QFrame):
 
     def _sync_selection_widgets(self) -> None:
         if self._selected_tile_id is None:
-            self.selected_target_value.setText("AMBIGU")
             return
         tile = self.tiles.get(self._selected_tile_id)
         if tile is None:
-            self._selected_tile_id = None
-            self.app_state.bridge_target_tile_id = None
-            self.selected_target_value.setText("AMBIGU")
             return
         current_session = self.session_edit.text().strip()
         if not current_session or current_session.startswith("SESSION-UNASSIGNED"):

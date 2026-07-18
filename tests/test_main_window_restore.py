@@ -96,9 +96,31 @@ class _FakeTile:
         self.restore_calls.append((current_url, zoom_factor))
 
 
+class _FakePagesWorkspace:
+    def __init__(self) -> None:
+        self.sync_calls = 0
+        self.refresh_calls = 0
+        self.request_calls: list[dict[str, object]] = []
+
+    def sync_target_from_state(self) -> None:
+        self.sync_calls += 1
+
+    def refresh_from_cache(self) -> None:
+        self.refresh_calls += 1
+
+    def request_refresh(self, *, force: bool = False) -> bool:
+        self.request_calls.append({"force": force})
+        return True
+
+    def activate(self) -> bool:
+        self.request_calls.append({"force": False, "activate": True})
+        return True
+
+
 class MainWindowRestoreTests(unittest.TestCase):
     def _build_restore_fake(self, controller: _FakeController) -> SimpleNamespace:
         tiles = {tile_id: _FakeTile(tile_id) for tile_id in range(TILE_COUNT)}
+        pages_workspace = _FakePagesWorkspace()
         app_state = SimpleNamespace(
             tiles=[SimpleNamespace(has_content=False, is_loading=False, memory_mb=0) for _ in range(TILE_COUNT)],
             last_selected_tile_id=0,
@@ -110,7 +132,7 @@ class MainWindowRestoreTests(unittest.TestCase):
             split_panel_visible=False,
             window_size=None,
         )
-        return SimpleNamespace(
+        fake_window = SimpleNamespace(
             _restoring_session=True,
             tiles=tiles,
             app_state=app_state,
@@ -118,7 +140,11 @@ class MainWindowRestoreTests(unittest.TestCase):
             page_matrix=_FakePageMatrix(),
             focus_view=SimpleNamespace(refresh_slots=lambda *args, **kwargs: None, is_split_panel_visible=lambda: False),
             fullscreen_button=_FakeButton(),
-            main_stack=SimpleNamespace(currentWidget=lambda: None),
+            pages_workspace=pages_workspace,
+            main_stack=SimpleNamespace(
+                currentWidget=lambda: None,
+                setCurrentWidget=lambda *_args, **_kwargs: None,
+            ),
             page_stack=SimpleNamespace(setCurrentIndex=lambda *_args, **_kwargs: None),
             _tile_positions_from_payload=lambda _payload: list(range(TILE_COUNT)),
             _apply_slot_order=lambda *_args, **_kwargs: None,
@@ -129,12 +155,13 @@ class MainWindowRestoreTests(unittest.TestCase):
             _tile_page_index=lambda tile_id: 0 if tile_id >= 0 else 0,
             show_tile_page=lambda *_args, **_kwargs: None,
             show_run_page=lambda: None,
-            show_pages_bridge_page=lambda: None,
             show_arena_page=lambda: None,
             enter_focus_mode=lambda *_args, **_kwargs: None,
             showNormal=lambda: None,
             showFullScreen=lambda: None,
         )
+        fake_window.show_pages_bridge_page = lambda: MainWindow.show_pages_bridge_page(fake_window)
+        return fake_window
 
     def test_restore_session_with_36_empty_tiles_defers_arena_refresh(self) -> None:
         payload = {
@@ -161,6 +188,33 @@ class MainWindowRestoreTests(unittest.TestCase):
         self.assertEqual(controller.in_progress, True)
         self.assertEqual(controller.snapshot_calls, 0)
         self.assertTrue(all(tile.restore_calls == [("", 1.0)] for tile in fake_window.tiles.values()))
+
+    def test_restore_session_with_pages_view_syncs_restored_target(self) -> None:
+        payload = {
+            "tiles": [
+                {"tile_id": tile_id, "current_url": "", "zoom_factor": 1.0}
+                for tile_id in range(TILE_COUNT)
+            ],
+            "last_selected_tile_id": 0,
+            "current_page_index": 0,
+            "active_view": "pages",
+            "bridge_target_tile_id": 0,
+            "focused_tile_id": None,
+            "split_panel_visible": False,
+            "is_fullscreen": False,
+        }
+        controller = _FakeController()
+        fake_window = self._build_restore_fake(controller)
+
+        with patch("app.windows.main_window.load_session_payload", return_value=payload):
+            MainWindow._restore_session(fake_window)
+
+        self.assertFalse(fake_window._restoring_session)
+        self.assertEqual(fake_window.pages_workspace.sync_calls, 1)
+        self.assertEqual(fake_window.pages_workspace.refresh_calls, 1)
+        self.assertEqual(fake_window.pages_workspace.request_calls, [{"force": False}])
+        self.assertEqual(controller.request_calls, 1)
+        self.assertEqual(controller.start_calls, 1)
 
     def test_refresh_top_state_reuses_async_arena_collection(self) -> None:
         snapshot = None
