@@ -110,6 +110,7 @@ class PagesBridgeWorkspace(QFrame):
         self._refresh_requested = False
         self._refresh_error = ""
         self._current_error = ""
+        self._bridge_status = "AMBIGU"
         self._current_target_validation: dict[str, Any] = {
             "status": "NOT_CONFIGURED",
             "is_valid": False,
@@ -355,6 +356,7 @@ class PagesBridgeWorkspace(QFrame):
         self._refresh_requested = True
         self._set_bridge_status("REFRESHING")
         self.subtitle_label.setText("Initialisation…")
+        self.update_action_availability()
         self._refresh_debounce_timer.start()
         return True
 
@@ -365,6 +367,7 @@ class PagesBridgeWorkspace(QFrame):
         self._pending_generation = 0
         self._refresh_requested = False
         self._refresh_in_progress = False
+        self.update_action_availability()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -676,7 +679,7 @@ class PagesBridgeWorkspace(QFrame):
             else:
                 target_label = "Aucune cible explicite"
             self.selected_target_value.setText(target_label)
-            self.send_button.setEnabled(bool(validation.get("is_valid")))
+            self.update_action_availability()
             return
 
         core = display_snapshot.get("core", {})
@@ -708,13 +711,25 @@ class PagesBridgeWorkspace(QFrame):
         else:
             target_label = "Aucune cible explicite"
         self.selected_target_value.setText(target_label)
-        self.send_button.setEnabled(bool(validation.get("is_valid")))
+        self.update_action_availability()
 
     def _set_bridge_status(self, status: str) -> None:
+        self._bridge_status = status
         self.state_badge.setText(status)
         self.state_badge.setProperty("arenaState", status)
         self.state_badge.style().unpolish(self.state_badge)
         self.state_badge.style().polish(self.state_badge)
+
+    def update_action_availability(self) -> None:
+        validation = self._current_target_validation or self._validate_selected_target()
+        bridge_status = str(self._bridge_status or "").strip().upper()
+        actions_enabled = bool(validation.get("is_valid"))
+        actions_enabled = actions_enabled and not self._refresh_shutdown
+        actions_enabled = actions_enabled and not self._refresh_in_progress
+        actions_enabled = actions_enabled and not self._refresh_requested
+        actions_enabled = actions_enabled and bridge_status not in {"REFRESHING", "DEGRADED", "ERROR"}
+        for button in (self.test_target_button, self.prepare_button, self.send_button):
+            button.setEnabled(actions_enabled)
 
     def _is_snapshot_stale(self) -> bool:
         if self._cached_snapshot is None:

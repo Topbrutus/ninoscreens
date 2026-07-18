@@ -92,6 +92,18 @@ class PagesBridgeWorkspaceRefreshTests(unittest.TestCase):
         tile.state.is_loading = False
         tile.state.has_content = True
 
+    def _assert_action_buttons(
+        self,
+        workspace: PagesBridgeWorkspace,
+        *,
+        test_enabled: bool,
+        prepare_enabled: bool,
+        send_enabled: bool,
+    ) -> None:
+        self.assertEqual(workspace.test_target_button.isEnabled(), test_enabled)
+        self.assertEqual(workspace.prepare_button.isEnabled(), prepare_enabled)
+        self.assertEqual(workspace.send_button.isEnabled(), send_enabled)
+
     def test_constructing_workspace_does_not_collect(self) -> None:
         workspace, controller = self._build_workspace()
         self.assertEqual(controller.snapshot_calls, 0)
@@ -213,7 +225,12 @@ class PagesBridgeWorkspaceRefreshTests(unittest.TestCase):
         self.assertEqual(workspace.selected_target_value.text(), "Tile 1 • ChatGPT")
         self.assertEqual(workspace.app_state.bridge_target_tile_id, 0)
         self.assertIn(workspace.state_badge.text(), {"IDLE", "READY"})
-        self.assertTrue(workspace.send_button.isEnabled())
+        self._assert_action_buttons(
+            workspace,
+            test_enabled=True,
+            prepare_enabled=True,
+            send_enabled=True,
+        )
 
     def test_no_explicit_target_with_multiple_candidates_is_ambiguous(self) -> None:
         controller = _FakeController()
@@ -229,6 +246,12 @@ class PagesBridgeWorkspaceRefreshTests(unittest.TestCase):
 
         self.assertEqual(workspace.selected_target_value.text(), "AMBIGU")
         self.assertEqual(workspace.app_state.bridge_target_tile_id, None)
+        self._assert_action_buttons(
+            workspace,
+            test_enabled=False,
+            prepare_enabled=False,
+            send_enabled=False,
+        )
 
     def test_explicit_invalid_target_stays_selected_and_invalid(self) -> None:
         controller = _FakeController()
@@ -244,7 +267,53 @@ class PagesBridgeWorkspaceRefreshTests(unittest.TestCase):
         self.assertEqual(workspace.selected_target_value.text(), "Tile 1 • INVALIDE")
         self.assertEqual(workspace.app_state.bridge_target_tile_id, 0)
         self.assertEqual(workspace.state_badge.text(), "ERROR")
-        self.assertFalse(workspace.send_button.isEnabled())
+        self._assert_action_buttons(
+            workspace,
+            test_enabled=False,
+            prepare_enabled=False,
+            send_enabled=False,
+        )
+
+    def test_empty_target_disables_all_actions(self) -> None:
+        workspace, _controller = self._build_workspace()
+
+        self.assertEqual(workspace.selected_target_value.text(), "Aucune cible explicite")
+        self._assert_action_buttons(
+            workspace,
+            test_enabled=False,
+            prepare_enabled=False,
+            send_enabled=False,
+        )
+
+    def test_missing_tile_disables_all_actions(self) -> None:
+        controller = _FakeController()
+        tiles = {tile_id: _FakeTile(tile_id) for tile_id in range(4)}
+        app_state = SimpleNamespace(bridge_target_tile_id=99)
+        workspace = PagesBridgeWorkspace(tiles, app_state, controller)
+
+        self.assertEqual(workspace.selected_target_value.text(), "Tile 100 • INVALIDE")
+        self._assert_action_buttons(
+            workspace,
+            test_enabled=False,
+            prepare_enabled=False,
+            send_enabled=False,
+        )
+
+    def test_wrong_origin_disables_all_actions(self) -> None:
+        controller = _FakeController()
+        workspace, _ = self._build_workspace(controller)
+        self._set_loaded_tile(workspace, 0, "https://example.com/")
+        workspace.app_state.bridge_target_tile_id = 0
+        workspace.sync_target_from_state()
+
+        self.assertEqual(workspace.selected_target_value.text(), "Tile 1 • INVALIDE")
+        self.assertEqual(workspace.state_badge.text(), "ERROR")
+        self._assert_action_buttons(
+            workspace,
+            test_enabled=False,
+            prepare_enabled=False,
+            send_enabled=False,
+        )
 
     def test_valid_refresh_stores_last_valid_snapshot(self) -> None:
         workspace, _controller = self._build_workspace()
@@ -262,7 +331,12 @@ class PagesBridgeWorkspaceRefreshTests(unittest.TestCase):
         self.assertEqual(workspace._cached_snapshot, snapshot)
         self.assertEqual(workspace._last_valid_snapshot, snapshot)
         self.assertEqual(workspace.state_badge.text(), "READY")
-        self.assertTrue(workspace.send_button.isEnabled())
+        self._assert_action_buttons(
+            workspace,
+            test_enabled=True,
+            prepare_enabled=True,
+            send_enabled=True,
+        )
 
     def test_invalid_refresh_preserves_last_valid_snapshot(self) -> None:
         workspace, _controller = self._build_workspace()
@@ -286,7 +360,12 @@ class PagesBridgeWorkspaceRefreshTests(unittest.TestCase):
         self.assertEqual(workspace._last_valid_snapshot, valid_snapshot)
         self.assertEqual(workspace.state_badge.text(), "DEGRADED")
         self.assertIn("example.com", workspace.last_block_value.text())
-        self.assertFalse(workspace.send_button.isEnabled())
+        self._assert_action_buttons(
+            workspace,
+            test_enabled=False,
+            prepare_enabled=False,
+            send_enabled=False,
+        )
 
     def test_recovery_to_chatgpt_returns_ready_and_updates_cache(self) -> None:
         workspace, _controller = self._build_workspace()
@@ -315,7 +394,12 @@ class PagesBridgeWorkspaceRefreshTests(unittest.TestCase):
         self.assertEqual(workspace._last_valid_snapshot, ready_snapshot)
         self.assertEqual(workspace.state_badge.text(), "READY")
         self.assertEqual(workspace.selected_target_value.text(), "Tile 1 • ChatGPT")
-        self.assertTrue(workspace.send_button.isEnabled())
+        self._assert_action_buttons(
+            workspace,
+            test_enabled=True,
+            prepare_enabled=True,
+            send_enabled=True,
+        )
 
 
 if __name__ == "__main__":
