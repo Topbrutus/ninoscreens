@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.chatgpt_bridge_browser import (
+    ChatGPTBridgeBrowserHost,
     FakeBridgeBrowserHost,
     PROFILE_ROOT,
     CACHE_ROOT,
@@ -59,3 +60,59 @@ def test_transport_contract_excludes_uiautomation_and_pages_tiles() -> None:
     assert status["transport"] == "DEDICATED_BACKGROUND_WEBVIEW"
     assert status["visible_page_dependency"] == "NONE"
     assert "UIAUTOMATION" not in status["transport"]
+
+
+def test_static_validation_rejects_external_domain() -> None:
+    host = FakeBridgeBrowserHost()
+    result = host.apply_target_url("https://example.com/c/abc")
+    assert result["status"] == "INVALID_URL"
+    assert host.applied_urls == []
+
+
+def test_static_validation_rejects_library_route() -> None:
+    host = FakeBridgeBrowserHost()
+    result = host.apply_target_url("https://chatgpt.com/library")
+    assert result["status"] == "UNSUPPORTED_ROUTE"
+    assert host.applied_urls == []
+
+
+def test_use_current_url_does_not_apply_target() -> None:
+    host = FakeBridgeBrowserHost(target_configured=False)
+    host.set_current_url("https://chatgpt.com/c/new-target")
+    assert host.current_url() == "https://chatgpt.com/c/new-target"
+    assert host.target_url() == ""
+    assert host.applied_urls == []
+
+
+def test_apply_valid_target_normalizes_and_applies_without_send() -> None:
+    host = FakeBridgeBrowserHost()
+    result = host.apply_target_url("https://chatgpt.com/c/new-target/?model=gpt-5")
+    assert result["status"] == "VALID"
+    assert host.target_url() == "https://chatgpt.com/c/new-target?model=gpt-5"
+    assert host.sends == 0
+
+
+def test_login_required_blocks_apply() -> None:
+    host = FakeBridgeBrowserHost(session_authenticated=False)
+    result = host.apply_target_url("https://chatgpt.com/c/new-target")
+    assert result["status"] == "LOGIN_REQUIRED"
+    assert host.applied_urls == []
+
+
+def test_composer_absent_blocks_apply() -> None:
+    host = FakeBridgeBrowserHost(composer_detected=False)
+    result = host.apply_target_url("https://chatgpt.com/c/new-target")
+    assert result["status"] == "COMPOSER_NOT_DETECTED"
+    assert host.applied_urls == []
+
+
+def test_clear_target_keeps_profile_contract() -> None:
+    host = FakeBridgeBrowserHost()
+    host.clear_target()
+    assert host.target_url() == ""
+    assert host.cleared is True
+    assert str(PROFILE_ROOT).startswith("D:\\")
+
+
+def test_conversation_id_observable_from_url() -> None:
+    assert ChatGPTBridgeBrowserHost._conversation_id("https://chatgpt.com/c/abc-123?model=gpt-5") == "abc-123"

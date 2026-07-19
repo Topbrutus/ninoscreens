@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QVBoxLayout,
@@ -36,6 +37,30 @@ class ChatGPTBridgeWorkspace(QFrame):
         header.addWidget(self.back_button)
         layout.addLayout(header)
 
+        self.target_frame = QFrame()
+        target_layout = QGridLayout(self.target_frame)
+        target_layout.setContentsMargins(10, 10, 10, 10)
+        target_layout.setSpacing(6)
+        self.target_title = QLabel("CONVERSATION CIBLE DU BRIDGE")
+        self.target_url_edit = QLineEdit(self.host.target_url())
+        self.target_url_edit.setPlaceholderText("https://chatgpt.com/c/...")
+        self.use_current_url_button = QPushButton("Utiliser l'URL actuelle")
+        self.apply_target_button = QPushButton("Appliquer au Bridge")
+        self.open_target_button = QPushButton("Ouvrir la cible")
+        self.test_target_button = QPushButton("Tester sans envoyer")
+        self.clear_target_button = QPushButton("Effacer la cible")
+        self.unapplied_label = QLabel("")
+        self.unapplied_label.setObjectName("WarningText")
+        target_layout.addWidget(self.target_title, 0, 0)
+        target_layout.addWidget(self.target_url_edit, 0, 1)
+        target_layout.addWidget(self.use_current_url_button, 0, 2)
+        target_layout.addWidget(self.apply_target_button, 0, 3)
+        target_layout.addWidget(self.open_target_button, 1, 1)
+        target_layout.addWidget(self.test_target_button, 1, 2)
+        target_layout.addWidget(self.clear_target_button, 1, 3)
+        target_layout.addWidget(self.unapplied_label, 2, 1, 1, 3)
+        layout.addWidget(self.target_frame)
+
         self.status_frame = QFrame()
         self.status_frame.setObjectName("BridgeStatusPanel")
         status_layout = QGridLayout(self.status_frame)
@@ -46,6 +71,10 @@ class ChatGPTBridgeWorkspace(QFrame):
             ("BRIDGE BROWSER", "browser"),
             ("SESSION", "session"),
             ("TARGET", "target"),
+            ("CONFIGURED AT", "configured_at"),
+            ("LAST VALIDATION", "last_validated_at"),
+            ("CONVERSATION ID", "target_conversation_id"),
+            ("VALIDATION", "validation_status"),
             ("CURRENT URL", "current_url"),
             ("COMPOSER", "composer"),
             ("GENERATION", "generation"),
@@ -65,18 +94,9 @@ class ChatGPTBridgeWorkspace(QFrame):
         layout.addWidget(self.status_frame)
 
         controls = QHBoxLayout()
-        self.open_button = QPushButton("Ouvrir la vue")
         self.refresh_button = QPushButton("Rafraîchir le statut")
-        self.set_target_button = QPushButton("Définir cette conversation comme cible")
-        self.clear_target_button = QPushButton("Effacer la cible")
-        self.return_target_button = QPushButton("Revenir à la cible")
-        self.diagnostic_button = QPushButton("Diagnostic sans envoi")
-        controls.addWidget(self.open_button)
         controls.addWidget(self.refresh_button)
-        controls.addWidget(self.set_target_button)
-        controls.addWidget(self.clear_target_button)
-        controls.addWidget(self.return_target_button)
-        controls.addWidget(self.diagnostic_button)
+        controls.addStretch(1)
         layout.addLayout(controls)
 
         self.browser_container = QFrame()
@@ -85,18 +105,20 @@ class ChatGPTBridgeWorkspace(QFrame):
         browser_layout.addWidget(self.host.widget(), 1)
         layout.addWidget(self.browser_container, 1)
 
-        self.open_button.clicked.connect(self.host.navigate_to_target)
         self.refresh_button.clicked.connect(self.refresh_status)
-        self.return_target_button.clicked.connect(self.host.navigate_to_target)
-        self.diagnostic_button.clicked.connect(self.run_diagnostic)
-        self.set_target_button.clicked.connect(self.set_current_as_target)
+        self.use_current_url_button.clicked.connect(self.use_current_url)
+        self.apply_target_button.clicked.connect(self.apply_target)
+        self.open_target_button.clicked.connect(self.host.navigate_to_target)
+        self.test_target_button.clicked.connect(self.run_diagnostic)
         self.clear_target_button.clicked.connect(self.clear_target)
+        self.target_url_edit.textChanged.connect(self.refresh_unapplied_indicator)
         self.host.status_changed.connect(self.apply_status)
         self.refresh_status()
 
     def apply_status(self, status: dict) -> None:
         for key, label in self.values.items():
             label.setText(str(status.get(key, "UNKNOWN") or ""))
+        self.refresh_unapplied_indicator()
 
     def refresh_status(self) -> None:
         self.host.refresh_status(self.apply_status)
@@ -104,12 +126,28 @@ class ChatGPTBridgeWorkspace(QFrame):
     def run_diagnostic(self) -> None:
         self.host.diagnostic_without_send(self.apply_status)
 
-    def set_current_as_target(self) -> None:
-        ok, reason = self.host.set_current_conversation_as_target()
-        if not ok:
-            QMessageBox.warning(self, "Cible non valide", reason)
+    def use_current_url(self) -> None:
+        self.target_url_edit.setText(self.host.current_url())
+        self.refresh_unapplied_indicator()
+
+    def apply_target(self) -> None:
+        def _done(result: dict) -> None:
+            if not result.get("ok"):
+                QMessageBox.warning(self, "Cible non valide", str(result.get("reason") or result.get("status") or "INVALID"))
+            else:
+                self.target_url_edit.setText(self.host.target_url())
+            self.refresh_status()
+
+        self.host.apply_target_url(self.target_url_edit.text(), _done)
+
+    def refresh_unapplied_indicator(self) -> None:
+        configured = self.host.target_url()
+        current = self.target_url_edit.text().strip()
+        self.unapplied_label.setText("CHANGEMENTS NON APPLIQUES" if current != configured else "")
 
     def clear_target(self) -> None:
         reply = QMessageBox.question(self, "Effacer la cible", "Effacer la conversation cible Bridge ?")
         if reply == QMessageBox.StandardButton.Yes:
             self.host.clear_target()
+            self.target_url_edit.setText("")
+            self.refresh_status()
