@@ -9,7 +9,9 @@ from app.chatgpt_bridge_browser import (
     CACHE_ROOT,
     STATE_ROOT,
     TARGET_CONFIG_PATH,
+    TARGET_HISTORY_PATH,
     TRANSPORT_KIND,
+    CHATGPT_DOM_PROBE_JS,
     _browser_state_payload,
     _choose_start_url,
     _is_useful_browser_state_url,
@@ -404,3 +406,120 @@ def test_restore_never_sends_or_creates_cycle() -> None:
     host.restore_or_start()
     assert host.sends == 0
     assert "SEND_ATTEMPTED" not in str(host.navigations)
+
+
+def test_target_test_loaded_conversation_validates_without_configuring() -> None:
+    host = FakeBridgeBrowserHost(target_configured=False)
+    host.set_current_url("https://chatgpt.com/c/live-fixture")
+    seen = []
+    host.diagnostic_without_send(seen.append, "https://chatgpt.com/c/live-fixture")
+    assert seen[-1]["session"] == "AUTHENTICATED"
+    assert seen[-1]["composer"] == "DETECTED"
+    assert seen[-1]["generation"] == "IDLE"
+    assert seen[-1]["validation_status"] == "VALID"
+    assert seen[-1]["target"] == "NOT_CONFIGURED"
+    assert host.target_url() == ""
+
+
+def test_target_test_textarea_and_contenteditable_statuses() -> None:
+    host = FakeBridgeBrowserHost(target_configured=False)
+    seen = []
+    host.diagnostic_without_send(seen.append, "https://chatgpt.com/c/textarea")
+    assert seen[-1]["composer"] == "DETECTED"
+    status = ChatGPTBridgeBrowserHost._diagnostic_payload_to_status(
+        _host_for_probe(),
+        _probe("AUTHENTICATED", "DETECTED", selector="[contenteditable='true'][role='textbox']"),
+    )
+    assert status.composer == "DETECTED"
+
+
+def test_target_test_same_url_does_not_navigate() -> None:
+    host = FakeBridgeBrowserHost(target_configured=False)
+    host.set_current_url("https://chatgpt.com/c/same")
+    host.diagnostic_without_send(lambda _status: None, "https://chatgpt.com/c/same")
+    assert host.navigations == []
+
+
+def test_target_test_different_url_navigates_once() -> None:
+    host = FakeBridgeBrowserHost(target_configured=False)
+    host.set_current_url("https://chatgpt.com/c/old")
+    host.diagnostic_without_send(lambda _status: None, "https://chatgpt.com/c/new")
+    assert host.navigations == ["https://chatgpt.com/c/new"]
+    assert host.current_url() == "https://chatgpt.com/c/new"
+
+
+def test_javascript_probe_is_try_catch_serializable() -> None:
+    assert "try {" in CHATGPT_DOM_PROBE_JS
+    assert "catch (error)" in CHATGPT_DOM_PROBE_JS
+    assert "JAVASCRIPT_EVALUATION_FAILED" in CHATGPT_DOM_PROBE_JS
+    assert "return {" in CHATGPT_DOM_PROBE_JS
+
+
+def test_javascript_none_result_is_invalid_not_login_required() -> None:
+    host = _host_for_probe()
+    status = ChatGPTBridgeBrowserHost._diagnostic_payload_to_status(
+        host,
+        {"ok": False, "error": "JAVASCRIPT_RESULT_INVALID", "url": "https://chatgpt.com/c/fixture", "ready_state": "complete"},
+    )
+    assert status.session != "LOGIN_REQUIRED"
+
+
+def test_javascript_exception_is_not_login_required() -> None:
+    host = _host_for_probe()
+    status = ChatGPTBridgeBrowserHost._diagnostic_payload_to_status(
+        host,
+        {"ok": False, "error": "JAVASCRIPT_EVALUATION_FAILED", "url": "https://chatgpt.com/c/fixture", "ready_state": "complete"},
+    )
+    assert status.session != "LOGIN_REQUIRED"
+
+
+def test_target_test_double_click_has_single_active_validation() -> None:
+    host = FakeBridgeBrowserHost(target_configured=False)
+    host.diagnostic_in_progress = True
+    seen = []
+    host.diagnostic_without_send(seen.append, "https://chatgpt.com/c/live-fixture")
+    assert seen[-1]["validation_status"] == "VALIDATION_IN_PROGRESS"
+
+
+def test_target_test_clears_old_error() -> None:
+    host = FakeBridgeBrowserHost(target_configured=False)
+    seen = []
+    host.diagnostic_without_send(seen.append, "https://chatgpt.com/c/live-fixture")
+    assert seen[-1]["last_error"] == ""
+
+
+def test_target_test_does_not_write_target_or_history() -> None:
+    host = FakeBridgeBrowserHost(target_configured=False)
+    host.diagnostic_without_send(lambda _status: None, "https://chatgpt.com/c/live-fixture")
+    assert host.target_json_writes == 0
+    assert host.history_writes == 0
+    assert str(TARGET_CONFIG_PATH).endswith("target.json")
+    assert str(TARGET_HISTORY_PATH).endswith("target-history.jsonl")
+
+
+def test_target_test_reads_enters_sends_no_text_and_creates_no_cycle() -> None:
+    host = FakeBridgeBrowserHost(target_configured=False)
+    host.diagnostic_without_send(lambda _status: None, "https://chatgpt.com/c/live-fixture")
+    assert host.text_read == 0
+    assert host.text_entered == 0
+    assert host.sends == 0
+    assert host.cycles_created == 0
+
+
+def test_target_test_invalid_static_url_does_not_navigate() -> None:
+    host = FakeBridgeBrowserHost(target_configured=False)
+    seen = []
+    host.diagnostic_without_send(seen.append, "https://example.com/c/nope")
+    assert seen[-1]["validation_status"] == "INVALID_URL"
+    assert host.navigations == []
+
+
+def test_target_test_sensitive_content_absent_from_status() -> None:
+    host = FakeBridgeBrowserHost(target_configured=False)
+    seen = []
+    host.diagnostic_without_send(seen.append, "https://chatgpt.com/c/live-fixture")
+    serialized = str(seen[-1]).lower()
+    assert "cookie" not in serialized
+    assert "token" not in serialized
+    assert "conversation text" not in serialized
+    assert "composer content" not in serialized

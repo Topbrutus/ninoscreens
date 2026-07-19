@@ -140,7 +140,22 @@ class ChatGPTBridgeWorkspace(QFrame):
         self.refresh_status()
 
     def run_diagnostic(self) -> None:
-        self.host.diagnostic_without_send(self.apply_status)
+        self.test_target_button.setEnabled(False)
+        self.apply_target_button.setEnabled(False)
+        self.values["validation_status"].setText("TESTING")
+        self.values["session"].setText("SESSION_LOADING")
+        self.values["composer"].setText("LOADING")
+        self.values["generation"].setText("UNKNOWN")
+        self.values["last_error"].setText("")
+
+        def _done(status: dict) -> None:
+            self.apply_status(status)
+            self.test_target_button.setEnabled(True)
+            self.apply_target_button.setEnabled(True)
+            if status.get("validation_status") == "VALID" and not status.get("last_error"):
+                QMessageBox.information(self, "Test sans envoi", "CIBLE VALIDE - AUCUN MESSAGE ENVOYE")
+
+        self.host.diagnostic_without_send(_done, self.target_url_edit.text())
 
     def use_current_url(self) -> None:
         self.target_url_edit.setText(self.host.current_url())

@@ -41,9 +41,10 @@ BLOCKED_ROUTES = ("/library", "/gpts", "/images", "/settings", "/login")
 
 CHATGPT_DOM_PROBE_JS = r"""
 (() => {
-  const now = new Date().toISOString();
-  const safeUrl = () => `${location.origin}${location.pathname}`;
-  const visible = (el) => {
+  try {
+    const now = new Date().toISOString();
+    const safeUrl = () => `${location.origin}${location.pathname}`;
+    const visible = (el) => {
     if (!el) return false;
     const style = window.getComputedStyle(el);
     const rect = el.getBoundingClientRect();
@@ -51,45 +52,45 @@ CHATGPT_DOM_PROBE_JS = r"""
     if (rect.width <= 0 || rect.height <= 0) return false;
     if (el.closest("[hidden], [aria-hidden='true']")) return false;
     return true;
-  };
-  const disabled = (el) => {
+    };
+    const disabled = (el) => {
     if (!el) return true;
     if (el.disabled) return true;
     if (el.getAttribute("aria-disabled") === "true") return true;
     if (el.closest("[aria-disabled='true'], fieldset[disabled]")) return true;
     return false;
-  };
-  const evidence = [];
-  const addEvidence = (kind, selector, el) => {
+    };
+    const evidence = [];
+    const addEvidence = (kind, selector, el) => {
     if (el) evidence.push({kind, selector, visible: visible(el)});
-  };
+    };
 
-  const path = location.pathname || "/";
-  const readyState = document.readyState || "unknown";
-  const loginForm = document.querySelector("form[action*='auth'], input[type='password'], a[href*='/auth/login'], button[data-testid*='login']");
-  const loginAction = Array.from(document.querySelectorAll("a, button")).find((el) => {
+    const path = location.pathname || "/";
+    const readyState = document.readyState || "unknown";
+    const loginForm = document.querySelector("form[action*='auth'], input[type='password'], a[href*='/auth/login'], button[data-testid*='login']");
+    const loginAction = Array.from(document.querySelectorAll("a, button")).find((el) => {
     const label = `${el.getAttribute("aria-label") || ""} ${el.getAttribute("data-testid") || ""}`.toLowerCase();
     return /\b(log-?in|sign-?up)\b/.test(label);
-  });
-  const newChat = document.querySelector("a[href='/'], a[href='/new'], [data-testid='create-new-chat-button'], [aria-label*='New chat'], [aria-label*='Nouveau']");
-  const sidebar = document.querySelector("nav, aside, [data-testid='history'], [data-testid='sidebar']");
-  const main = document.querySelector("main");
-  addEvidence("new_chat", "[data-testid='create-new-chat-button']|[aria-label*='New chat']", newChat);
-  addEvidence("sidebar", "nav|aside|[data-testid='sidebar']", sidebar);
-  addEvidence("main", "main", main);
-  addEvidence("login_form", "form[action*='auth']|input[type='password']", loginForm);
-  addEvidence("login_action", "a|button login/signup", loginAction);
+    });
+    const newChat = document.querySelector("a[href='/'], a[href='/new'], [data-testid='create-new-chat-button'], [aria-label*='New chat'], [aria-label*='Nouveau']");
+    const sidebar = document.querySelector("nav, aside, [data-testid='history'], [data-testid='sidebar']");
+    const main = document.querySelector("main");
+    addEvidence("new_chat", "[data-testid='create-new-chat-button']|[aria-label*='New chat']", newChat);
+    addEvidence("sidebar", "nav|aside|[data-testid='sidebar']", sidebar);
+    addEvidence("main", "main", main);
+    addEvidence("login_form", "form[action*='auth']|input[type='password']", loginForm);
+    addEvidence("login_action", "a|button login/signup", loginAction);
 
-  let sessionState = "SESSION_UNKNOWN";
-  if (readyState !== "complete" && readyState !== "interactive") {
+    let sessionState = "SESSION_UNKNOWN";
+    if (readyState !== "complete" && readyState !== "interactive") {
     sessionState = "SESSION_LOADING";
-  } else if (path.startsWith("/auth") || path.startsWith("/login") || visible(loginForm) || visible(loginAction)) {
+    } else if (path.startsWith("/auth") || path.startsWith("/login") || visible(loginForm) || visible(loginAction)) {
     sessionState = "LOGIN_REQUIRED";
-  } else if (visible(newChat) || visible(sidebar) || visible(main) || path.startsWith("/c/")) {
+    } else if (visible(newChat) || visible(sidebar) || visible(main) || path.startsWith("/c/")) {
     sessionState = "AUTHENTICATED";
-  }
+    }
 
-  const composerSelectors = [
+    const composerSelectors = [
     "#prompt-textarea",
     "[data-testid='prompt-textarea']",
     "textarea[data-testid='prompt-textarea']",
@@ -98,9 +99,9 @@ CHATGPT_DOM_PROBE_JS = r"""
     "[contenteditable='true'][role='textbox']",
     "form [contenteditable='true']",
     "main [contenteditable='true']"
-  ];
-  const candidates = [];
-  for (const selector of composerSelectors) {
+    ];
+    const candidates = [];
+    for (const selector of composerSelectors) {
     for (const el of Array.from(document.querySelectorAll(selector))) {
       const rect = el.getBoundingClientRect();
       const inMain = Boolean(el.closest("main"));
@@ -113,24 +114,24 @@ CHATGPT_DOM_PROBE_JS = r"""
         area: rect.width * rect.height
       });
     }
-  }
-  const winner = candidates.find((c) => c.visible && c.enabled && c.editable && !c.inSidebar && (c.inMain || c.inForm));
-  const stopButton = Array.from(document.querySelectorAll("button")).find((button) => {
+    }
+    const winner = candidates.find((c) => c.visible && c.enabled && c.editable && !c.inSidebar && (c.inMain || c.inForm));
+    const stopButton = Array.from(document.querySelectorAll("button")).find((button) => {
     const label = `${button.getAttribute("aria-label") || ""} ${button.getAttribute("data-testid") || ""}`.toLowerCase();
     return label.includes("stop") || label.includes("arrêter");
-  });
-  const generation = visible(stopButton) ? "STREAMING" : "IDLE";
-  let composerState = "NOT_DETECTED";
-  if (readyState !== "complete" && candidates.length === 0) {
+    });
+    const generation = visible(stopButton) ? "STREAMING" : "IDLE";
+    let composerState = "NOT_DETECTED";
+    if (readyState !== "complete" && candidates.length === 0) {
     composerState = "LOADING";
-  } else if (generation === "STREAMING") {
+    } else if (generation === "STREAMING") {
     composerState = "GENERATION_ACTIVE";
-  } else if (winner) {
+    } else if (winner) {
     composerState = "DETECTED";
-  } else if (candidates.some((c) => c.visible && !c.enabled)) {
+    } else if (candidates.some((c) => c.visible && !c.enabled)) {
     composerState = "DISABLED";
-  }
-  return {
+    }
+    return {
     ok: true,
     url: safeUrl(),
     ready_state: readyState,
@@ -148,7 +149,19 @@ CHATGPT_DOM_PROBE_JS = r"""
       timestamp: now
     },
     generation
-  };
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      url: `${location.origin}${location.pathname}`,
+      ready_state: (document && document.readyState) || "unknown",
+      timestamp: new Date().toISOString(),
+      session: {state: "SESSION_UNKNOWN", evidence: [], url: `${location.origin}${location.pathname}`, ready_state: (document && document.readyState) || "unknown", timestamp: new Date().toISOString()},
+      composer: {state: "UNKNOWN", selector: null, element_kind: "unknown", visible: false, enabled: false, editable: false, ready_state: (document && document.readyState) || "unknown", candidate_count: 0, timestamp: new Date().toISOString()},
+      generation: "UNKNOWN",
+      error: "JAVASCRIPT_EVALUATION_FAILED"
+    };
+  }
 })()
 """
 
@@ -586,7 +599,7 @@ class ChatGPTBridgeBrowserHost(QObject):
                 self._write_live_diagnostic_event("STALE_DIAGNOSTIC_IGNORED", error_code="STALE_DIAGNOSTIC_IGNORED")
                 callback({"ok": False, "stale": True, "error": "STALE_DIAGNOSTIC_IGNORED"})
                 return
-            info = result if isinstance(result, dict) else {"ok": False, "error": "JAVASCRIPT_EVALUATION_FAILED"}
+            info = result if isinstance(result, dict) else {"ok": False, "error": "JAVASCRIPT_RESULT_INVALID"}
             self._write_live_diagnostic_event("SESSION_DIAGNOSTIC_COMPLETED", info=info, error_code=info.get("error"))
             self._write_live_diagnostic_event("COMPOSER_DIAGNOSTIC_COMPLETED", info=info, error_code=info.get("error"))
             callback(info)
@@ -616,7 +629,16 @@ class ChatGPTBridgeBrowserHost(QObject):
             status = self._diagnostic_payload_to_status(info)
             session_state = status.session
             composer_state = status.composer
-            ready = info.get("ready_state") == "complete"
+            ready = info.get("ready_state") in {"complete", "interactive"}
+            if info.get("error"):
+                reason = str(info.get("error") or "JAVASCRIPT_EVALUATION_FAILED")
+                self._last_error = reason
+                status.last_error = reason
+                self._last_status = status
+                self.status_changed.emit(status.__dict__.copy())
+                self._write_live_diagnostic_event("LIVE_DIAGNOSTIC_FAILED", info=info, error_code=reason)
+                callback({"ok": False, "reason": reason, "status": status.__dict__.copy(), "diagnostic": info})
+                return
             if session_state == "AUTHENTICATED" and (not require_composer or composer_state == "DETECTED"):
                 self._last_error = ""
                 status.last_error = ""
@@ -789,8 +811,76 @@ class ChatGPTBridgeBrowserHost(QObject):
     def status_snapshot(self) -> dict[str, Any]:
         return self._last_status.__dict__.copy()
 
-    def diagnostic_without_send(self, callback: Callable[[dict[str, Any]], None]) -> None:
-        self.refresh_status(callback)
+    def _target_test_status(self, info: dict[str, Any], *, validation_status: str, last_error: str = "") -> dict[str, Any]:
+        status = self._diagnostic_payload_to_status(info)
+        snapshot = status.__dict__.copy()
+        snapshot["target"] = "CONFIGURED" if self.target_url() else "NOT_CONFIGURED"
+        snapshot["validation_status"] = validation_status
+        snapshot["last_error"] = last_error
+        return snapshot
+
+    def diagnostic_without_send(self, callback: Callable[[dict[str, Any]], None], url: str | None = None) -> None:
+        field_url = str(url if url is not None else self.current_url()).strip()
+        self.ensure_view_bound()
+        identity = self.technical_identity()
+        if not identity.get("same_page_object"):
+            self._last_error = "WRONG_BROWSER_HOST"
+            callback({**self.status_snapshot(), "last_error": "WRONG_BROWSER_HOST"})
+            return
+        active = self._active_cycle()
+        if active is not None:
+            self._last_error = "TARGET_CHANGE_BLOCKED"
+            callback({**self.status_snapshot(), "last_error": "ACTIVE_BRIDGE_CYCLE", "cycle": active.get("cycle_id", "")})
+            return
+        try:
+            normalized = self.normalize_target_url(field_url)
+        except ValueError:
+            normalized = field_url
+        valid, reason = self.validate_target_url(normalized)
+        if not valid:
+            self._last_error = reason
+            callback({**self.status_snapshot(), "validation_status": reason, "last_error": reason})
+            return
+        if self._validation_in_progress or self._live_diagnostic_in_progress:
+            callback({**self.status_snapshot(), "validation_status": "VALIDATION_IN_PROGRESS", "last_error": "VALIDATION_IN_PROGRESS"})
+            return
+        self._live_diagnostic_in_progress = True
+        self._diagnostic_generation += 1
+        generation = self._diagnostic_generation
+        self._last_status.session = "SESSION_LOADING"
+        self._last_status.composer = "LOADING"
+        self._last_status.generation = "UNKNOWN"
+        self._last_status.validation_status = "TESTING"
+        self._last_status.last_error = ""
+        self.status_changed.emit(self.status_snapshot())
+
+        def _finish(result: dict[str, Any]) -> None:
+            self._live_diagnostic_in_progress = False
+            if result.get("stale"):
+                return
+            if not result.get("ok"):
+                reason_text = str(result.get("reason") or "TARGET_VALIDATION_FAILED")
+                status_dict = result.get("status") if isinstance(result.get("status"), dict) else self.status_snapshot()
+                status_dict = {**status_dict, "validation_status": reason_text, "last_error": reason_text}
+                self._last_error = reason_text
+                self._last_status = BridgeBrowserStatus(**{k: status_dict.get(k, getattr(BridgeBrowserStatus(), k)) for k in BridgeBrowserStatus().__dict__})
+                self.status_changed.emit(status_dict)
+                callback(status_dict)
+                return
+            diagnostic = result.get("diagnostic") if isinstance(result.get("diagnostic"), dict) else {}
+            status_dict = self._target_test_status(diagnostic, validation_status="VALID", last_error="")
+            status_dict["target"] = "NOT_CONFIGURED" if not self.target_url() else "CONFIGURED"
+            self._last_error = ""
+            self._last_status = BridgeBrowserStatus(**{k: status_dict.get(k, getattr(BridgeBrowserStatus(), k)) for k in BridgeBrowserStatus().__dict__})
+            self.status_changed.emit(status_dict)
+            callback(status_dict)
+
+        if _sanitize_chatgpt_url(self.current_url()) != _sanitize_chatgpt_url(normalized):
+            self._mark_navigation_started()
+            self.page.setUrl(QUrl(normalized))
+            QTimer.singleShot(250, lambda: self.diagnose_until_stable(_finish, require_composer=True, generation=generation))
+            return
+        self.diagnose_until_stable(_finish, require_composer=True, generation=generation)
 
     def insert_bridge_message(self, cycle_id: str, transmission_key: str, expected_state: str, message: str, callback: Callable[[dict[str, Any]], None]) -> None:
         if expected_state != "SEND_ATTEMPTED":
@@ -833,6 +923,12 @@ class FakeBridgeBrowserHost(QObject):
         self.cleared = False
         self.validation_in_progress = False
         self.refresh_calls = 0
+        self.diagnostic_in_progress = False
+        self.target_json_writes = 0
+        self.history_writes = 0
+        self.cycles_created = 0
+        self.text_read = 0
+        self.text_entered = 0
 
     def target_url(self) -> str:
         return self._target_url
@@ -886,8 +982,33 @@ class FakeBridgeBrowserHost(QObject):
         if callback:
             callback(status)
 
-    def diagnostic_without_send(self, callback: Callable[[dict[str, Any]], None]) -> None:
-        callback(self.status_snapshot())
+    def diagnostic_without_send(self, callback: Callable[[dict[str, Any]], None], url: str | None = None) -> None:
+        if self.diagnostic_in_progress:
+            callback({**self.status_snapshot(), "validation_status": "VALIDATION_IN_PROGRESS", "last_error": "VALIDATION_IN_PROGRESS"})
+            return
+        self.diagnostic_in_progress = True
+        requested_url = str(url or self._current_url)
+        try:
+            normalized = ChatGPTBridgeBrowserHost.normalize_target_url(requested_url)
+        except ValueError:
+            normalized = requested_url
+        if not normalized.startswith("https://chatgpt.com/c/"):
+            reason = "INVALID_URL" if not normalized.startswith("https://chatgpt.com/") else "UNSUPPORTED_ROUTE"
+            self.diagnostic_in_progress = False
+            callback({**self.status_snapshot(), "validation_status": reason, "last_error": reason})
+            return
+        if _sanitize_chatgpt_url(self._current_url) != _sanitize_chatgpt_url(normalized):
+            self.navigations.append(normalized)
+            self._current_url = normalized
+        status = {
+            **self.status_snapshot(),
+            "target": "NOT_CONFIGURED" if not self.target_configured else "CONFIGURED",
+            "validation_status": "VALID",
+            "last_error": "",
+            "generation": "IDLE",
+        }
+        self.diagnostic_in_progress = False
+        callback(status)
 
     def apply_target_url(self, url: str, callback: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
         if self.validation_in_progress:
