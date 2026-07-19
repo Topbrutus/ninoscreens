@@ -10,7 +10,7 @@ import tempfile
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
-from PySide6.QtCore import QObject, QUrl, Signal
+from PySide6.QtCore import QObject, QTimer, QUrl, Signal
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
@@ -39,33 +39,115 @@ BLOCKED_ROUTES = ("/library", "/gpts", "/images", "/settings", "/login")
 
 CHATGPT_DOM_PROBE_JS = r"""
 (() => {
-  const selectors = [
-    "textarea",
-    "div[contenteditable='true']",
-    "[data-testid='composer'] textarea",
-    "[data-testid='composer'] div[contenteditable='true']",
-    "#prompt-textarea"
-  ];
-  const composer = selectors.map((selector) => document.querySelector(selector)).find(Boolean);
-  const buttons = Array.from(document.querySelectorAll("button"));
-  const sendButton = buttons.find((button) => {
-    const label = `${button.getAttribute("aria-label") || ""} ${button.textContent || ""}`.toLowerCase();
-    return label.includes("send") || label.includes("envoyer");
+  const now = new Date().toISOString();
+  const safeUrl = () => `${location.origin}${location.pathname}`;
+  const visible = (el) => {
+    if (!el) return false;
+    const style = window.getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity || 1) <= 0) return false;
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    if (el.closest("[hidden], [aria-hidden='true']")) return false;
+    return true;
+  };
+  const disabled = (el) => {
+    if (!el) return true;
+    if (el.disabled) return true;
+    if (el.getAttribute("aria-disabled") === "true") return true;
+    if (el.closest("[aria-disabled='true'], fieldset[disabled]")) return true;
+    return false;
+  };
+  const evidence = [];
+  const addEvidence = (kind, selector, el) => {
+    if (el) evidence.push({kind, selector, visible: visible(el)});
+  };
+
+  const path = location.pathname || "/";
+  const readyState = document.readyState || "unknown";
+  const loginForm = document.querySelector("form[action*='auth'], input[type='password'], a[href*='/auth/login'], button[data-testid*='login']");
+  const loginAction = Array.from(document.querySelectorAll("a, button")).find((el) => {
+    const label = `${el.getAttribute("aria-label") || ""} ${el.getAttribute("data-testid") || ""}`.toLowerCase();
+    return /\b(log-?in|sign-?up)\b/.test(label);
   });
-  const stopButton = buttons.find((button) => {
-    const label = `${button.getAttribute("aria-label") || ""} ${button.textContent || ""}`.toLowerCase();
+  const newChat = document.querySelector("a[href='/'], a[href='/new'], [data-testid='create-new-chat-button'], [aria-label*='New chat'], [aria-label*='Nouveau']");
+  const sidebar = document.querySelector("nav, aside, [data-testid='history'], [data-testid='sidebar']");
+  const main = document.querySelector("main");
+  addEvidence("new_chat", "[data-testid='create-new-chat-button']|[aria-label*='New chat']", newChat);
+  addEvidence("sidebar", "nav|aside|[data-testid='sidebar']", sidebar);
+  addEvidence("main", "main", main);
+  addEvidence("login_form", "form[action*='auth']|input[type='password']", loginForm);
+  addEvidence("login_action", "a|button login/signup", loginAction);
+
+  let sessionState = "SESSION_UNKNOWN";
+  if (readyState !== "complete" && readyState !== "interactive") {
+    sessionState = "SESSION_LOADING";
+  } else if (path.startsWith("/auth") || path.startsWith("/login") || visible(loginForm) || visible(loginAction)) {
+    sessionState = "LOGIN_REQUIRED";
+  } else if (visible(newChat) || visible(sidebar) || visible(main) || path.startsWith("/c/")) {
+    sessionState = "AUTHENTICATED";
+  }
+
+  const composerSelectors = [
+    "#prompt-textarea",
+    "[data-testid='prompt-textarea']",
+    "textarea[data-testid='prompt-textarea']",
+    "textarea[placeholder]",
+    "div[contenteditable='true'][data-lexical-editor='true']",
+    "[contenteditable='true'][role='textbox']",
+    "form [contenteditable='true']",
+    "main [contenteditable='true']"
+  ];
+  const candidates = [];
+  for (const selector of composerSelectors) {
+    for (const el of Array.from(document.querySelectorAll(selector))) {
+      const rect = el.getBoundingClientRect();
+      const inMain = Boolean(el.closest("main"));
+      const inForm = Boolean(el.closest("form"));
+      const inSidebar = Boolean(el.closest("nav, aside, [data-testid='sidebar'], [data-testid='history']"));
+      const editable = el.tagName.toLowerCase() === "textarea" || el.isContentEditable || el.getAttribute("contenteditable") === "true";
+      candidates.push({
+        el, selector, inMain, inForm, inSidebar, editable,
+        visible: visible(el), enabled: !disabled(el),
+        area: rect.width * rect.height
+      });
+    }
+  }
+  const winner = candidates.find((c) => c.visible && c.enabled && c.editable && !c.inSidebar && (c.inMain || c.inForm));
+  const stopButton = Array.from(document.querySelectorAll("button")).find((button) => {
+    const label = `${button.getAttribute("aria-label") || ""} ${button.getAttribute("data-testid") || ""}`.toLowerCase();
     return label.includes("stop") || label.includes("arrêter");
   });
-  const text = document.body ? document.body.innerText || "" : "";
+  const generation = visible(stopButton) ? "STREAMING" : "IDLE";
+  let composerState = "NOT_DETECTED";
+  if (readyState !== "complete" && candidates.length === 0) {
+    composerState = "LOADING";
+  } else if (generation === "STREAMING") {
+    composerState = "GENERATION_ACTIVE";
+  } else if (winner) {
+    composerState = "DETECTED";
+  } else if (candidates.some((c) => c.visible && !c.enabled)) {
+    composerState = "DISABLED";
+  }
   return {
-    url: location.href,
-    title: document.title,
-    composer_detected: Boolean(composer),
-    send_button_detected: Boolean(sendButton),
-    generation: stopButton ? "STREAMING" : "IDLE",
-    body_length: text.length
+    ok: true,
+    url: safeUrl(),
+    ready_state: readyState,
+    timestamp: now,
+    session: { state: sessionState, evidence, url: safeUrl(), ready_state: readyState, timestamp: now },
+    composer: {
+      state: composerState,
+      selector: winner ? winner.selector : null,
+      element_kind: winner ? winner.el.tagName.toLowerCase() : "unknown",
+      visible: Boolean(winner && winner.visible),
+      enabled: Boolean(winner && winner.enabled),
+      editable: Boolean(winner && winner.editable),
+      ready_state: readyState,
+      candidate_count: candidates.length,
+      timestamp: now
+    },
+    generation
   };
-})();
+})()
 """
 
 
@@ -191,6 +273,11 @@ class ChatGPTBridgeBrowserHost(QObject):
         self._last_status = BridgeBrowserStatus(browser="ONLINE")
         self._current_cycle = "NONE"
         self._last_error = ""
+        self._navigation_epoch = 0
+        self._diagnostic_generation = 0
+        self._validation_in_progress = False
+        self.page.loadStarted.connect(self._mark_navigation_started)
+        self.page.urlChanged.connect(lambda _url: self._mark_navigation_started())
         self.page.loadFinished.connect(lambda _ok: self.refresh_status())
 
     @property
@@ -199,6 +286,12 @@ class ChatGPTBridgeBrowserHost(QObject):
 
     def widget(self) -> QWebEngineView:
         return self.view
+
+    def _mark_navigation_started(self) -> None:
+        self._navigation_epoch += 1
+        self._last_status.session = "SESSION_LOADING"
+        self._last_status.composer = "LOADING"
+        self.status_changed.emit(self.status_snapshot())
 
     def _load_target(self) -> dict[str, Any]:
         if not TARGET_CONFIG_PATH.exists():
@@ -305,12 +398,111 @@ class ChatGPTBridgeBrowserHost(QObject):
 
     def navigate_to_target(self) -> None:
         url = self.target_url() or ALLOWED_CHATGPT_PREFIX
+        self._mark_navigation_started()
         self.page.setUrl(QUrl(url))
 
     def current_url(self) -> str:
         return self.page.url().toString()
 
+    def _diagnostic_payload_to_status(self, info: dict[str, Any]) -> BridgeBrowserStatus:
+        current_url = str(info.get("url") or self.page.url().toString())
+        valid, reason = self.validate_target_url(self.target_url())
+        session_info = info.get("session") if isinstance(info.get("session"), dict) else {}
+        composer_info = info.get("composer") if isinstance(info.get("composer"), dict) else {}
+        session = str(session_info.get("state") or "SESSION_UNKNOWN")
+        composer = str(composer_info.get("state") or "UNKNOWN")
+        if not self.target_url():
+            target = "NOT_CONFIGURED"
+            reason = "BRIDGE_TARGET_NOT_CONFIGURED"
+        elif not valid:
+            target = "INVALID"
+        else:
+            target = "CONFIGURED"
+        last_error = self._last_error or ("" if reason == "VALID" else reason)
+        return BridgeBrowserStatus(
+            browser="ONLINE",
+            session=session,
+            target=target,
+            current_url=current_url,
+            composer=composer,
+            generation=str(info.get("generation") or "UNKNOWN"),
+            cycle=self._current_cycle,
+            last_error=last_error,
+            configured_at=str(self._target.get("configured_at") or ""),
+            last_validated_at=str(self._target.get("last_validated_at") or ""),
+            target_conversation_id=str(self._target.get("target_conversation_id") or ""),
+            validation_status=str(self._target.get("validation_status") or "NOT_TESTED"),
+        )
+
+    def _run_dom_diagnostic(self, generation: int, callback: Callable[[dict[str, Any]], None]) -> None:
+        epoch = self._navigation_epoch
+
+        def _complete(result: Any) -> None:
+            if generation != self._diagnostic_generation or epoch != self._navigation_epoch:
+                self._last_error = "STALE_DIAGNOSTIC_IGNORED"
+                callback({"ok": False, "stale": True, "error": "STALE_DIAGNOSTIC_IGNORED"})
+                return
+            info = result if isinstance(result, dict) else {"ok": False, "error": "JAVASCRIPT_EVALUATION_FAILED"}
+            callback(info)
+
+        self.page.runJavaScript(CHATGPT_DOM_PROBE_JS, _complete)
+
+    def diagnose_until_stable(
+        self,
+        callback: Callable[[dict[str, Any]], None],
+        *,
+        require_composer: bool = False,
+        attempt: int = 0,
+        generation: int | None = None,
+    ) -> None:
+        delays = [0, 250, 500, 1000, 2000, 3000, 4000]
+        if generation is None:
+            self._diagnostic_generation += 1
+            generation = self._diagnostic_generation
+
+        def _evaluate(info: dict[str, Any]) -> None:
+            if info.get("stale"):
+                if attempt >= len(delays) - 1:
+                    callback({"ok": False, "reason": "STALE_DIAGNOSTIC_IGNORED", "status": self.status_snapshot(), "diagnostic": info})
+                    return
+                QTimer.singleShot(delays[attempt + 1], lambda: self.diagnose_until_stable(callback, require_composer=require_composer, attempt=attempt + 1, generation=generation))
+                return
+            status = self._diagnostic_payload_to_status(info)
+            self._last_status = status
+            self.status_changed.emit(status.__dict__.copy())
+            session_state = status.session
+            composer_state = status.composer
+            ready = info.get("ready_state") == "complete"
+            if session_state == "AUTHENTICATED" and (not require_composer or composer_state == "DETECTED"):
+                callback({"ok": True, "status": status.__dict__.copy(), "diagnostic": info})
+                return
+            if composer_state == "GENERATION_ACTIVE":
+                callback({"ok": False, "reason": "GENERATION_ACTIVE", "status": status.__dict__.copy(), "diagnostic": info})
+                return
+            if attempt >= len(delays) - 1:
+                reason = "COMPOSER_LOADING_TIMEOUT" if require_composer and session_state == "AUTHENTICATED" else "TARGET_PAGE_LOADING_TIMEOUT"
+                if session_state == "LOGIN_REQUIRED":
+                    reason = "LOGIN_REQUIRED"
+                elif require_composer and composer_state in {"NOT_DETECTED", "DISABLED"}:
+                    reason = "COMPOSER_NOT_DETECTED" if composer_state == "NOT_DETECTED" else "COMPOSER_DISABLED"
+                callback({"ok": False, "reason": reason, "status": status.__dict__.copy(), "diagnostic": info})
+                return
+            if not ready or session_state in {"SESSION_LOADING", "SESSION_UNKNOWN"} or (require_composer and composer_state == "LOADING"):
+                QTimer.singleShot(delays[attempt + 1], lambda: self.diagnose_until_stable(callback, require_composer=require_composer, attempt=attempt + 1, generation=generation))
+                return
+            if require_composer and session_state == "AUTHENTICATED" and composer_state != "DETECTED":
+                QTimer.singleShot(delays[attempt + 1], lambda: self.diagnose_until_stable(callback, require_composer=require_composer, attempt=attempt + 1, generation=generation))
+                return
+            callback({"ok": False, "reason": "LOGIN_REQUIRED" if session_state == "LOGIN_REQUIRED" else "SESSION_UNKNOWN", "status": status.__dict__.copy(), "diagnostic": info})
+
+        self._run_dom_diagnostic(generation, _evaluate)
+
     def apply_target_url(self, url: str, callback: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
+        if self._validation_in_progress:
+            result = {"ok": False, "status": "VALIDATION_IN_PROGRESS", "reason": "VALIDATION_IN_PROGRESS"}
+            if callback:
+                callback(result)
+            return result
         active = self._active_cycle()
         if active is not None:
             result = {"ok": False, "status": "TARGET_CHANGE_BLOCKED", "reason": "ACTIVE_BRIDGE_CYCLE", **active}
@@ -333,12 +525,21 @@ class ChatGPTBridgeBrowserHost(QObject):
                 callback(result)
             return result
 
-        def _finish(status: dict[str, Any]) -> None:
-            composer_ok = status.get("composer") == "DETECTED"
-            if not composer_ok:
-                self._last_error = "COMPOSER_NOT_DETECTED"
+        self._validation_in_progress = True
+        self._last_status.session = "SESSION_LOADING"
+        self._last_status.composer = "LOADING"
+        self.status_changed.emit(self.status_snapshot())
+
+        def _finish(result: dict[str, Any]) -> None:
+            self._validation_in_progress = False
+            status = result.get("status") if isinstance(result.get("status"), dict) else {}
+            session_state = str(status.get("session") or "SESSION_UNKNOWN")
+            composer_state = str(status.get("composer") or "UNKNOWN")
+            if not result.get("ok"):
+                reason = str(result.get("reason") or "TARGET_VALIDATION_FAILED")
+                self._last_error = reason
                 if callback:
-                    callback({"ok": False, "status": "COMPOSER_NOT_DETECTED", "reason": "COMPOSER_NOT_DETECTED"})
+                    callback({"ok": False, "status": reason, "reason": reason, "session": session_state, "composer": composer_state})
                 return
             payload = self._save_target(normalized)
             self._last_error = ""
@@ -347,8 +548,9 @@ class ChatGPTBridgeBrowserHost(QObject):
                 callback({"ok": True, "status": "VALID", "target": payload})
 
         if self.current_url() != normalized:
+            self._mark_navigation_started()
             self.page.setUrl(QUrl(normalized))
-        self.refresh_status(_finish)
+        QTimer.singleShot(250, lambda: self.diagnose_until_stable(_finish, require_composer=True))
         return {"ok": True, "status": "VALIDATING", "target_url": normalized}
 
     def set_current_conversation_as_target(self) -> tuple[bool, str]:
@@ -393,46 +595,21 @@ class ChatGPTBridgeBrowserHost(QObject):
         self.refresh_status()
 
     def refresh_status(self, callback: Callable[[dict[str, Any]], None] | None = None) -> None:
-        def _complete(result: Any) -> None:
-            info = result if isinstance(result, dict) else {}
-            current_url = str(info.get("url") or self.page.url().toString())
-            valid, reason = self.validate_target_url(self.target_url())
-            session = "AUTHENTICATED" if bool(info.get("composer_detected")) else "LOGIN_REQUIRED"
-            if not self.target_url():
-                target = "NOT_CONFIGURED"
-                reason = "BRIDGE_TARGET_NOT_CONFIGURED"
-            elif not valid:
-                target = "INVALID"
-            else:
-                target = "CONFIGURED"
-            last_error = self._last_error or ("" if reason == "VALID" else reason)
-            status = BridgeBrowserStatus(
-                browser="ONLINE",
-                session=session,
-                target=target,
-                current_url=current_url,
-                composer="DETECTED" if info.get("composer_detected") else "NOT_DETECTED",
-                generation=str(info.get("generation") or "UNKNOWN"),
-                cycle=self._current_cycle,
-                last_error=last_error,
-                configured_at=str(self._target.get("configured_at") or ""),
-                last_validated_at=str(self._target.get("last_validated_at") or ""),
-                target_conversation_id=str(self._target.get("target_conversation_id") or ""),
-                validation_status=str(self._target.get("validation_status") or "NOT_TESTED"),
-            )
-            self._last_status = status
-            payload = status.__dict__.copy()
-            self.status_changed.emit(payload)
+        def _done(result: dict[str, Any]) -> None:
+            status = result.get("status") if isinstance(result.get("status"), dict) else self.status_snapshot()
             if callback:
-                callback(payload)
+                callback(status)
 
-        self.page.runJavaScript(CHATGPT_DOM_PROBE_JS, _complete)
+        self.diagnose_until_stable(_done, require_composer=False)
 
     def status_snapshot(self) -> dict[str, Any]:
         return self._last_status.__dict__.copy()
 
     def diagnostic_without_send(self, callback: Callable[[dict[str, Any]], None]) -> None:
-        self.refresh_status(callback)
+        def _done(result: dict[str, Any]) -> None:
+            callback(result.get("status") if isinstance(result.get("status"), dict) else self.status_snapshot())
+
+        self.diagnose_until_stable(_done, require_composer=False)
 
     def insert_bridge_message(self, cycle_id: str, transmission_key: str, expected_state: str, message: str, callback: Callable[[dict[str, Any]], None]) -> None:
         if expected_state != "SEND_ATTEMPTED":
@@ -470,6 +647,7 @@ class FakeBridgeBrowserHost(QObject):
         self.applied_urls: list[str] = []
         self.navigations: list[str] = []
         self.cleared = False
+        self.validation_in_progress = False
 
     def target_url(self) -> str:
         return self._target_url
@@ -498,6 +676,11 @@ class FakeBridgeBrowserHost(QObject):
         callback(self.status_snapshot())
 
     def apply_target_url(self, url: str, callback: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
+        if self.validation_in_progress:
+            result = {"ok": False, "status": "VALIDATION_IN_PROGRESS", "reason": "VALIDATION_IN_PROGRESS"}
+            if callback:
+                callback(result)
+            return result
         try:
             normalized = ChatGPTBridgeBrowserHost.normalize_target_url(url)
         except ValueError:

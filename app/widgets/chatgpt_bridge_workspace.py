@@ -131,9 +131,22 @@ class ChatGPTBridgeWorkspace(QFrame):
         self.refresh_unapplied_indicator()
 
     def apply_target(self) -> None:
+        self.apply_target_button.setEnabled(False)
+        self.apply_target_button.setText("Validation en cours...")
+
         def _done(result: dict) -> None:
+            self.apply_target_button.setEnabled(True)
+            self.apply_target_button.setText("Appliquer au Bridge")
             if not result.get("ok"):
-                QMessageBox.warning(self, "Cible non valide", str(result.get("reason") or result.get("status") or "INVALID"))
+                reason = str(result.get("reason") or result.get("status") or "INVALID")
+                session = str(result.get("session") or self.values["session"].text() or "SESSION_UNKNOWN")
+                composer = str(result.get("composer") or self.values["composer"].text() or "UNKNOWN")
+                short_url = self.target_url_edit.text().strip().split("?", 1)[0]
+                QMessageBox.warning(
+                    self,
+                    "Cible non valide",
+                    f"{reason}\nSESSION: {session}\nCOMPOSER: {composer}\nURL: {short_url}",
+                )
             else:
                 self.target_url_edit.setText(self.host.target_url())
             self.refresh_status()

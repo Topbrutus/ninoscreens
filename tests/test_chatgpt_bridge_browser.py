@@ -116,3 +116,126 @@ def test_clear_target_keeps_profile_contract() -> None:
 
 def test_conversation_id_observable_from_url() -> None:
     assert ChatGPTBridgeBrowserHost._conversation_id("https://chatgpt.com/c/abc-123?model=gpt-5") == "abc-123"
+
+
+class _ProbeHost(ChatGPTBridgeBrowserHost):
+    def __init__(self) -> None:
+        pass
+
+    def target_url(self) -> str:
+        return ""
+
+
+def _host_for_probe() -> ChatGPTBridgeBrowserHost:
+    host = ChatGPTBridgeBrowserHost.__new__(_ProbeHost)
+    host._target = {}
+    host._last_error = ""
+    host._current_cycle = "NONE"
+    return host
+
+
+def _probe(session: str, composer: str, *, selector: str | None = "#prompt-textarea") -> dict:
+    return {
+        "url": "https://chatgpt.com/c/fixture",
+        "ready_state": "complete",
+        "session": {
+            "state": session,
+            "evidence": [{"kind": "main", "selector": "main", "visible": True}],
+            "url": "https://chatgpt.com/c/fixture",
+            "ready_state": "complete",
+            "timestamp": "2026-07-19T00:00:00Z",
+        },
+        "composer": {
+            "state": composer,
+            "selector": selector,
+            "element_kind": "textarea" if selector and "textarea" in selector else "contenteditable",
+            "visible": composer == "DETECTED",
+            "enabled": composer == "DETECTED",
+            "editable": composer == "DETECTED",
+            "ready_state": "complete",
+            "candidate_count": 1 if selector else 0,
+            "timestamp": "2026-07-19T00:00:00Z",
+        },
+        "generation": "IDLE",
+    }
+
+
+def test_authenticated_textarea_probe_is_detected() -> None:
+    status = ChatGPTBridgeBrowserHost._diagnostic_payload_to_status(
+        _host_for_probe(),
+        _probe("AUTHENTICATED", "DETECTED", selector="textarea[data-testid='prompt-textarea']"),
+    )
+    assert status.session == "AUTHENTICATED"
+    assert status.composer == "DETECTED"
+
+
+def test_authenticated_contenteditable_probe_is_detected() -> None:
+    status = ChatGPTBridgeBrowserHost._diagnostic_payload_to_status(
+        _host_for_probe(),
+        _probe("AUTHENTICATED", "DETECTED", selector="[contenteditable='true'][role='textbox']"),
+    )
+    assert status.session == "AUTHENTICATED"
+    assert status.composer == "DETECTED"
+
+
+def test_lexical_composer_selector_supported() -> None:
+    status = ChatGPTBridgeBrowserHost._diagnostic_payload_to_status(
+        _host_for_probe(),
+        _probe("AUTHENTICATED", "DETECTED", selector="div[contenteditable='true'][data-lexical-editor='true']"),
+    )
+    assert status.composer == "DETECTED"
+
+
+def test_login_page_is_login_required_without_composer() -> None:
+    status = ChatGPTBridgeBrowserHost._diagnostic_payload_to_status(
+        _host_for_probe(),
+        _probe("LOGIN_REQUIRED", "NOT_DETECTED", selector=None),
+    )
+    assert status.session == "LOGIN_REQUIRED"
+    assert status.composer == "NOT_DETECTED"
+
+
+def test_authenticated_without_composer_is_not_login_required() -> None:
+    status = ChatGPTBridgeBrowserHost._diagnostic_payload_to_status(
+        _host_for_probe(),
+        _probe("AUTHENTICATED", "NOT_DETECTED", selector=None),
+    )
+    assert status.session == "AUTHENTICATED"
+    assert status.composer == "NOT_DETECTED"
+
+
+def test_loading_states_are_separate() -> None:
+    status = ChatGPTBridgeBrowserHost._diagnostic_payload_to_status(
+        _host_for_probe(),
+        _probe("SESSION_LOADING", "LOADING", selector=None),
+    )
+    assert status.session == "SESSION_LOADING"
+    assert status.composer == "LOADING"
+
+
+def test_sidebar_false_positive_not_selected_fixture() -> None:
+    status = ChatGPTBridgeBrowserHost._diagnostic_payload_to_status(
+        _host_for_probe(),
+        _probe("AUTHENTICATED", "NOT_DETECTED", selector=None),
+    )
+    assert status.composer != "DETECTED"
+
+
+def test_double_apply_is_blocked_while_validation_runs() -> None:
+    host = FakeBridgeBrowserHost()
+    host.validation_in_progress = True
+    result = host.apply_target_url("https://chatgpt.com/c/new-target")
+    assert result["status"] == "VALIDATION_IN_PROGRESS"
+    assert host.applied_urls == []
+
+
+def test_diagnostic_status_contains_no_sensitive_content() -> None:
+    status = ChatGPTBridgeBrowserHost._diagnostic_payload_to_status(
+        _host_for_probe(),
+        _probe("AUTHENTICATED", "DETECTED"),
+    ).__dict__
+    serialized = str(status).lower()
+    assert "cookie" not in serialized
+    assert "token" not in serialized
+    assert "message text" not in serialized
+    assert "composer content" not in serialized
