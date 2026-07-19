@@ -13,6 +13,14 @@ from app.chatgpt_bridge_browser import (
 )
 
 
+class _DummySignal:
+    def __init__(self) -> None:
+        self.payloads = []
+
+    def emit(self, payload) -> None:
+        self.payloads.append(payload)
+
+
 def test_bridge_paths_are_d_only() -> None:
     for path in (PROFILE_ROOT, CACHE_ROOT, STATE_ROOT, TARGET_CONFIG_PATH):
         assert str(path).startswith("D:\\")
@@ -125,12 +133,34 @@ class _ProbeHost(ChatGPTBridgeBrowserHost):
     def target_url(self) -> str:
         return ""
 
+    @property
+    def host_id(self) -> str:
+        return "chatgpt-bridge-primary"
+
+    def current_url(self) -> str:
+        return "https://chatgpt.com/c/fixture"
+
+    def _write_live_diagnostic_event(self, *args, **kwargs) -> None:
+        self.logged_events.append((args, kwargs))
+
+    def _run_dom_diagnostic(self, generation, callback) -> None:
+        self.run_count += 1
+        callback(self.next_probe)
+
 
 def _host_for_probe() -> ChatGPTBridgeBrowserHost:
     host = ChatGPTBridgeBrowserHost.__new__(_ProbeHost)
     host._target = {}
     host._last_error = ""
     host._current_cycle = "NONE"
+    host._last_status = __import__("app.chatgpt_bridge_browser", fromlist=["BridgeBrowserStatus"]).BridgeBrowserStatus(browser="ONLINE")
+    host._navigation_epoch = 0
+    host._diagnostic_generation = 0
+    host._live_diagnostic_in_progress = False
+    host.status_changed = _DummySignal()
+    host.logged_events = []
+    host.run_count = 0
+    host.next_probe = _probe("AUTHENTICATED", "DETECTED")
     return host
 
 
@@ -239,3 +269,47 @@ def test_diagnostic_status_contains_no_sensitive_content() -> None:
     assert "token" not in serialized
     assert "message text" not in serialized
     assert "composer content" not in serialized
+
+
+def test_refresh_loaded_page_runs_without_new_load_finished() -> None:
+    host = _host_for_probe()
+    seen = []
+    host.refresh_status(seen.append)
+    assert host.run_count == 1
+    assert seen[-1]["session"] == "AUTHENTICATED"
+    assert seen[-1]["composer"] == "DETECTED"
+
+
+def test_successful_refresh_clears_old_error() -> None:
+    host = _host_for_probe()
+    host._last_error = "TARGET_PAGE_LOADING_TIMEOUT"
+    seen = []
+    host.refresh_status(seen.append)
+    assert seen[-1]["last_error"] == ""
+    assert host.status_snapshot()["last_error"] == ""
+
+
+def test_refresh_does_not_configure_target() -> None:
+    host = _host_for_probe()
+    seen = []
+    host.refresh_status(seen.append)
+    assert seen[-1]["session"] == "AUTHENTICATED"
+    assert seen[-1]["composer"] == "DETECTED"
+    assert seen[-1]["target"] == "NOT_CONFIGURED"
+    assert seen[-1]["validation_status"] == "NOT_TESTED"
+
+
+def test_refresh_javascript_failure_is_not_login_required() -> None:
+    host = _host_for_probe()
+    status = ChatGPTBridgeBrowserHost._diagnostic_payload_to_status(
+        host,
+        {"ok": False, "error": "JAVASCRIPT_EVALUATION_FAILED", "url": "https://chatgpt.com/c/fixture", "ready_state": "complete"},
+    )
+    assert status.session != "LOGIN_REQUIRED"
+
+
+def test_refresh_double_click_fake_has_single_active_call() -> None:
+    host = FakeBridgeBrowserHost()
+    host.refresh_status(lambda _status: None)
+    host.refresh_status(lambda _status: None)
+    assert host.refresh_calls == 2

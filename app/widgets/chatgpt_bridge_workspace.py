@@ -121,7 +121,16 @@ class ChatGPTBridgeWorkspace(QFrame):
         self.refresh_unapplied_indicator()
 
     def refresh_status(self) -> None:
-        self.host.refresh_status(self.apply_status)
+        self.refresh_button.setEnabled(False)
+        self.values["session"].setText("SESSION_LOADING")
+        self.values["composer"].setText("LOADING")
+        self.values["last_error"].setText("VALIDATION_IN_PROGRESS")
+
+        def _done(status: dict) -> None:
+            self.apply_status(status)
+            self.refresh_button.setEnabled(True)
+
+        self.host.refresh_status(_done)
 
     def run_diagnostic(self) -> None:
         self.host.diagnostic_without_send(self.apply_status)

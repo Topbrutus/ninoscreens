@@ -22,6 +22,7 @@ LOG_ROOT = Path(r"D:\logs\chatgpt-bridge")
 TEMP_ROOT = Path(r"D:\temp\chatgpt-bridge")
 TARGET_CONFIG_PATH = Path(r"D:\config\chatgpt-bridge\target.json")
 TARGET_HISTORY_PATH = STATE_ROOT / "target-history.jsonl"
+LIVE_DIAGNOSTIC_LOG_PATH = STATE_ROOT / "live-diagnostic.jsonl"
 CYCLES_ROOT = STATE_ROOT / "cycles"
 RESPONSES_ROOT = Path(r"D:\communication\responses")
 ALLOWED_CHATGPT_PREFIX = "https://chatgpt.com/"
@@ -230,6 +231,22 @@ def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
         os.fsync(handle.fileno())
 
 
+def _route_kind(url: str) -> str:
+    try:
+        path = urlsplit(url).path or "/"
+    except ValueError:
+        return "INVALID"
+    if path.startswith("/c/"):
+        return "CONVERSATION"
+    if path in {"/", ""}:
+        return "HOME"
+    if path.startswith("/library"):
+        return "LIBRARY"
+    if path.startswith("/login") or path.startswith("/auth"):
+        return "LOGIN"
+    return "OTHER"
+
+
 def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest().upper()
 
@@ -276,6 +293,7 @@ class ChatGPTBridgeBrowserHost(QObject):
         self._navigation_epoch = 0
         self._diagnostic_generation = 0
         self._validation_in_progress = False
+        self._live_diagnostic_in_progress = False
         self.page.loadStarted.connect(self._mark_navigation_started)
         self.page.urlChanged.connect(lambda _url: self._mark_navigation_started())
         self.page.loadFinished.connect(lambda _ok: self.refresh_status())
@@ -292,6 +310,24 @@ class ChatGPTBridgeBrowserHost(QObject):
         self._last_status.session = "SESSION_LOADING"
         self._last_status.composer = "LOADING"
         self.status_changed.emit(self.status_snapshot())
+
+    def _write_live_diagnostic_event(self, event: str, *, info: dict[str, Any] | None = None, error_code: str | None = None) -> None:
+        info = info if isinstance(info, dict) else {}
+        session = info.get("session") if isinstance(info.get("session"), dict) else {}
+        composer = info.get("composer") if isinstance(info.get("composer"), dict) else {}
+        _append_jsonl(LIVE_DIAGNOSTIC_LOG_PATH, {
+            "timestamp": self._now(),
+            "event": event,
+            "browser_host_id": self.host_id,
+            "current_route_kind": _route_kind(str(info.get("url") or self.current_url())),
+            "ready_state": str(info.get("ready_state") or ""),
+            "session_state": str(session.get("state") or ""),
+            "composer_state": str(composer.get("state") or ""),
+            "generation_state": str(info.get("generation") or ""),
+            "navigation_epoch": self._navigation_epoch,
+            "diagnostic_generation": self._diagnostic_generation,
+            "error_code": error_code,
+        })
 
     def _load_target(self) -> dict[str, Any]:
         if not TARGET_CONFIG_PATH.exists():
@@ -436,13 +472,16 @@ class ChatGPTBridgeBrowserHost(QObject):
 
     def _run_dom_diagnostic(self, generation: int, callback: Callable[[dict[str, Any]], None]) -> None:
         epoch = self._navigation_epoch
+        self._write_live_diagnostic_event("LIVE_DIAGNOSTIC_STARTED")
 
         def _complete(result: Any) -> None:
             if generation != self._diagnostic_generation or epoch != self._navigation_epoch:
-                self._last_error = "STALE_DIAGNOSTIC_IGNORED"
+                self._write_live_diagnostic_event("STALE_DIAGNOSTIC_IGNORED", error_code="STALE_DIAGNOSTIC_IGNORED")
                 callback({"ok": False, "stale": True, "error": "STALE_DIAGNOSTIC_IGNORED"})
                 return
             info = result if isinstance(result, dict) else {"ok": False, "error": "JAVASCRIPT_EVALUATION_FAILED"}
+            self._write_live_diagnostic_event("SESSION_DIAGNOSTIC_COMPLETED", info=info, error_code=info.get("error"))
+            self._write_live_diagnostic_event("COMPOSER_DIAGNOSTIC_COMPLETED", info=info, error_code=info.get("error"))
             callback(info)
 
         self.page.runJavaScript(CHATGPT_DOM_PROBE_JS, _complete)
@@ -468,15 +507,22 @@ class ChatGPTBridgeBrowserHost(QObject):
                 QTimer.singleShot(delays[attempt + 1], lambda: self.diagnose_until_stable(callback, require_composer=require_composer, attempt=attempt + 1, generation=generation))
                 return
             status = self._diagnostic_payload_to_status(info)
-            self._last_status = status
-            self.status_changed.emit(status.__dict__.copy())
             session_state = status.session
             composer_state = status.composer
             ready = info.get("ready_state") == "complete"
             if session_state == "AUTHENTICATED" and (not require_composer or composer_state == "DETECTED"):
+                self._last_error = ""
+                status.last_error = ""
+                self._last_status = status
+                self.status_changed.emit(status.__dict__.copy())
+                self._write_live_diagnostic_event("LIVE_DIAGNOSTIC_APPLIED", info=info)
                 callback({"ok": True, "status": status.__dict__.copy(), "diagnostic": info})
                 return
+            self._last_status = status
+            self.status_changed.emit(status.__dict__.copy())
             if composer_state == "GENERATION_ACTIVE":
+                self._last_error = "GENERATION_ACTIVE"
+                self._write_live_diagnostic_event("LIVE_DIAGNOSTIC_FAILED", info=info, error_code="GENERATION_ACTIVE")
                 callback({"ok": False, "reason": "GENERATION_ACTIVE", "status": status.__dict__.copy(), "diagnostic": info})
                 return
             if attempt >= len(delays) - 1:
@@ -485,6 +531,11 @@ class ChatGPTBridgeBrowserHost(QObject):
                     reason = "LOGIN_REQUIRED"
                 elif require_composer and composer_state in {"NOT_DETECTED", "DISABLED"}:
                     reason = "COMPOSER_NOT_DETECTED" if composer_state == "NOT_DETECTED" else "COMPOSER_DISABLED"
+                self._last_error = reason
+                status.last_error = reason
+                self._last_status = status
+                self.status_changed.emit(status.__dict__.copy())
+                self._write_live_diagnostic_event("LIVE_DIAGNOSTIC_FAILED", info=info, error_code=reason)
                 callback({"ok": False, "reason": reason, "status": status.__dict__.copy(), "diagnostic": info})
                 return
             if not ready or session_state in {"SESSION_LOADING", "SESSION_UNKNOWN"} or (require_composer and composer_state == "LOADING"):
@@ -493,7 +544,13 @@ class ChatGPTBridgeBrowserHost(QObject):
             if require_composer and session_state == "AUTHENTICATED" and composer_state != "DETECTED":
                 QTimer.singleShot(delays[attempt + 1], lambda: self.diagnose_until_stable(callback, require_composer=require_composer, attempt=attempt + 1, generation=generation))
                 return
-            callback({"ok": False, "reason": "LOGIN_REQUIRED" if session_state == "LOGIN_REQUIRED" else "SESSION_UNKNOWN", "status": status.__dict__.copy(), "diagnostic": info})
+            reason = "LOGIN_REQUIRED" if session_state == "LOGIN_REQUIRED" else "SESSION_UNKNOWN"
+            self._last_error = reason
+            status.last_error = reason
+            self._last_status = status
+            self.status_changed.emit(status.__dict__.copy())
+            self._write_live_diagnostic_event("LIVE_DIAGNOSTIC_FAILED", info=info, error_code=reason)
+            callback({"ok": False, "reason": reason, "status": status.__dict__.copy(), "diagnostic": info})
 
         self._run_dom_diagnostic(generation, _evaluate)
 
@@ -595,21 +652,35 @@ class ChatGPTBridgeBrowserHost(QObject):
         self.refresh_status()
 
     def refresh_status(self, callback: Callable[[dict[str, Any]], None] | None = None) -> None:
+        if self.host_id != BROWSER_HOST_ID:
+            self._last_error = "WRONG_BROWSER_HOST"
+            if callback:
+                callback(self.status_snapshot())
+            return
+        if self._live_diagnostic_in_progress:
+            if callback:
+                callback(self.status_snapshot())
+            return
+        self._live_diagnostic_in_progress = True
+        self._write_live_diagnostic_event("LIVE_DIAGNOSTIC_REQUESTED")
+        self._last_status.session = "SESSION_LOADING"
+        self._last_status.composer = "LOADING"
+        self._last_status.last_error = "VALIDATION_IN_PROGRESS"
+        self.status_changed.emit(self.status_snapshot())
+
         def _done(result: dict[str, Any]) -> None:
+            self._live_diagnostic_in_progress = False
             status = result.get("status") if isinstance(result.get("status"), dict) else self.status_snapshot()
             if callback:
                 callback(status)
 
-        self.diagnose_until_stable(_done, require_composer=False)
+        self.diagnose_until_stable(_done, require_composer=True)
 
     def status_snapshot(self) -> dict[str, Any]:
         return self._last_status.__dict__.copy()
 
     def diagnostic_without_send(self, callback: Callable[[dict[str, Any]], None]) -> None:
-        def _done(result: dict[str, Any]) -> None:
-            callback(result.get("status") if isinstance(result.get("status"), dict) else self.status_snapshot())
-
-        self.diagnose_until_stable(_done, require_composer=False)
+        self.refresh_status(callback)
 
     def insert_bridge_message(self, cycle_id: str, transmission_key: str, expected_state: str, message: str, callback: Callable[[dict[str, Any]], None]) -> None:
         if expected_state != "SEND_ATTEMPTED":
@@ -648,6 +719,7 @@ class FakeBridgeBrowserHost(QObject):
         self.navigations: list[str] = []
         self.cleared = False
         self.validation_in_progress = False
+        self.refresh_calls = 0
 
     def target_url(self) -> str:
         return self._target_url
@@ -668,6 +740,7 @@ class FakeBridgeBrowserHost(QObject):
         return QWidget()
 
     def refresh_status(self, callback: Callable[[dict[str, Any]], None] | None = None) -> None:
+        self.refresh_calls += 1
         status = self.status_snapshot()
         if callback:
             callback(status)
