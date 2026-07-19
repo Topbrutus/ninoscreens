@@ -131,36 +131,39 @@ CHATGPT_DOM_PROBE_JS = r"""
     } else if (candidates.some((c) => c.visible && !c.enabled)) {
     composerState = "DISABLED";
     }
-    return {
-    ok: true,
-    url: safeUrl(),
-    ready_state: readyState,
-    timestamp: now,
-    session: { state: sessionState, evidence, url: safeUrl(), ready_state: readyState, timestamp: now },
-    composer: {
-      state: composerState,
-      selector: winner ? winner.selector : null,
+    return JSON.stringify({
+      schema_version: 1,
+      ok: true,
+      url: safeUrl(),
+      ready_state: String(readyState),
+      route_kind: path.startsWith("/c/") ? "CONVERSATION" : (path === "/" ? "HOME" : "OTHER"),
+      session_state: sessionState,
+      composer_state: composerState,
+      generation_state: generation,
+      matched_selector: winner ? winner.selector : null,
       element_kind: winner ? winner.el.tagName.toLowerCase() : "unknown",
-      visible: Boolean(winner && winner.visible),
-      enabled: Boolean(winner && winner.enabled),
-      editable: Boolean(winner && winner.editable),
-      ready_state: readyState,
       candidate_count: candidates.length,
-      timestamp: now
-    },
-    generation
-    };
+      browser_host_id: "chatgpt-bridge-primary",
+      timestamp: now,
+      error: null
+    });
   } catch (error) {
-    return {
+    return JSON.stringify({
+      schema_version: 1,
       ok: false,
       url: `${location.origin}${location.pathname}`,
-      ready_state: (document && document.readyState) || "unknown",
+      ready_state: String((document && document.readyState) || "unknown"),
+      route_kind: "UNKNOWN",
+      session_state: "SESSION_UNKNOWN",
+      composer_state: "UNKNOWN",
+      generation_state: "UNKNOWN",
+      matched_selector: null,
+      element_kind: "unknown",
+      candidate_count: 0,
+      browser_host_id: "chatgpt-bridge-primary",
       timestamp: new Date().toISOString(),
-      session: {state: "SESSION_UNKNOWN", evidence: [], url: `${location.origin}${location.pathname}`, ready_state: (document && document.readyState) || "unknown", timestamp: new Date().toISOString()},
-      composer: {state: "UNKNOWN", selector: null, element_kind: "unknown", visible: false, enabled: false, editable: false, ready_state: (document && document.readyState) || "unknown", candidate_count: 0, timestamp: new Date().toISOString()},
-      generation: "UNKNOWN",
       error: "JAVASCRIPT_EVALUATION_FAILED"
-    };
+    });
   }
 })()
 """
@@ -303,6 +306,99 @@ def _choose_start_url(target_url: str, browser_state_url: str) -> str:
     if _is_useful_browser_state_url(browser_state_url):
         return _sanitize_chatgpt_url(browser_state_url)
     return ALLOWED_CHATGPT_PREFIX
+
+
+REQUIRED_JAVASCRIPT_DIAGNOSTIC_KEYS = {
+    "schema_version",
+    "ok",
+    "ready_state",
+    "route_kind",
+    "session_state",
+    "composer_state",
+    "generation_state",
+    "browser_host_id",
+    "error",
+}
+
+
+def _canonical_to_legacy_diagnostic(data: dict[str, Any]) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat()
+    ready_state = str(data.get("ready_state") or "unknown")
+    url = str(data.get("url") or "")
+    return {
+        "schema_version": data.get("schema_version"),
+        "ok": bool(data.get("ok")),
+        "url": url,
+        "ready_state": ready_state,
+        "route_kind": str(data.get("route_kind") or _route_kind(url)),
+        "timestamp": str(data.get("timestamp") or now),
+        "session": {
+            "state": str(data.get("session_state") or "SESSION_UNKNOWN"),
+            "evidence": [],
+            "url": url,
+            "ready_state": ready_state,
+            "timestamp": str(data.get("timestamp") or now),
+        },
+        "composer": {
+            "state": str(data.get("composer_state") or "UNKNOWN"),
+            "selector": data.get("matched_selector"),
+            "element_kind": str(data.get("element_kind") or "unknown"),
+            "visible": str(data.get("composer_state") or "") == "DETECTED",
+            "enabled": str(data.get("composer_state") or "") == "DETECTED",
+            "editable": str(data.get("composer_state") or "") == "DETECTED",
+            "ready_state": ready_state,
+            "candidate_count": int(data.get("candidate_count") or 0),
+            "timestamp": str(data.get("timestamp") or now),
+        },
+        "generation": str(data.get("generation_state") or "UNKNOWN"),
+        "browser_host_id": str(data.get("browser_host_id") or ""),
+        "error": data.get("error"),
+    }
+
+
+def decode_javascript_diagnostic_result(raw_result: Any) -> tuple[bool, dict[str, Any]]:
+    if raw_result is None:
+        return False, {"ok": False, "error": "JAVASCRIPT_RESULT_EMPTY"}
+    if isinstance(raw_result, str):
+        try:
+            decoded = json.loads(raw_result)
+        except json.JSONDecodeError:
+            return False, {"ok": False, "error": "JAVASCRIPT_RESULT_PARSE_FAILED"}
+    elif isinstance(raw_result, dict):
+        decoded = raw_result
+    else:
+        return False, {"ok": False, "error": "JAVASCRIPT_RESULT_INVALID_TYPE"}
+    if not isinstance(decoded, dict):
+        return False, {"ok": False, "error": "JAVASCRIPT_RESULT_INVALID_TYPE"}
+    if REQUIRED_JAVASCRIPT_DIAGNOSTIC_KEYS.issubset(decoded.keys()):
+        return True, _canonical_to_legacy_diagnostic(decoded)
+    if {"session", "composer", "ready_state", "generation"}.issubset(decoded.keys()):
+        return True, decoded
+    return False, {"ok": False, "error": "JAVASCRIPT_RESULT_SCHEMA_INVALID"}
+
+
+def _javascript_result_probe(raw_result: Any) -> dict[str, Any]:
+    result_type = type(raw_result).__name__
+    payload: dict[str, Any] = {
+        "python_result_type": result_type,
+        "python_result_is_none": raw_result is None,
+        "python_result_is_dict": isinstance(raw_result, dict),
+        "python_result_is_string": isinstance(raw_result, str),
+        "python_result_length": len(raw_result) if isinstance(raw_result, str) else None,
+        "python_result_keys": sorted(str(key) for key in raw_result.keys()) if isinstance(raw_result, dict) else [],
+        "parse_attempt": isinstance(raw_result, str),
+        "parse_error_code": None,
+    }
+    if isinstance(raw_result, str):
+        payload["first_character"] = raw_result[:1]
+        payload["last_character"] = raw_result[-1:] if raw_result else ""
+        try:
+            decoded = json.loads(raw_result)
+            payload["decoded_type"] = type(decoded).__name__
+            payload["decoded_keys"] = sorted(str(key) for key in decoded.keys()) if isinstance(decoded, dict) else []
+        except json.JSONDecodeError:
+            payload["parse_error_code"] = "JAVASCRIPT_RESULT_PARSE_FAILED"
+    return payload
 
 
 def _sha256_text(text: str) -> str:
@@ -599,7 +695,10 @@ class ChatGPTBridgeBrowserHost(QObject):
                 self._write_live_diagnostic_event("STALE_DIAGNOSTIC_IGNORED", error_code="STALE_DIAGNOSTIC_IGNORED")
                 callback({"ok": False, "stale": True, "error": "STALE_DIAGNOSTIC_IGNORED"})
                 return
-            info = result if isinstance(result, dict) else {"ok": False, "error": "JAVASCRIPT_RESULT_INVALID"}
+            decoded_ok, info = decode_javascript_diagnostic_result(result)
+            type_probe = _javascript_result_probe(result)
+            if not decoded_ok:
+                info = {**info, **type_probe}
             self._write_live_diagnostic_event("SESSION_DIAGNOSTIC_COMPLETED", info=info, error_code=info.get("error"))
             self._write_live_diagnostic_event("COMPOSER_DIAGNOSTIC_COMPLETED", info=info, error_code=info.get("error"))
             callback(info)

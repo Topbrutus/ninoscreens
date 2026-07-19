@@ -12,6 +12,7 @@ from app.chatgpt_bridge_browser import (
     TARGET_HISTORY_PATH,
     TRANSPORT_KIND,
     CHATGPT_DOM_PROBE_JS,
+    decode_javascript_diagnostic_result,
     _browser_state_payload,
     _choose_start_url,
     _is_useful_browser_state_url,
@@ -452,7 +453,7 @@ def test_javascript_probe_is_try_catch_serializable() -> None:
     assert "try {" in CHATGPT_DOM_PROBE_JS
     assert "catch (error)" in CHATGPT_DOM_PROBE_JS
     assert "JAVASCRIPT_EVALUATION_FAILED" in CHATGPT_DOM_PROBE_JS
-    assert "return {" in CHATGPT_DOM_PROBE_JS
+    assert "return JSON.stringify" in CHATGPT_DOM_PROBE_JS
 
 
 def test_javascript_none_result_is_invalid_not_login_required() -> None:
@@ -523,3 +524,94 @@ def test_target_test_sensitive_content_absent_from_status() -> None:
     assert "token" not in serialized
     assert "conversation text" not in serialized
     assert "composer content" not in serialized
+
+
+def _canonical_js_result(**overrides) -> dict:
+    payload = {
+        "schema_version": 1,
+        "ok": True,
+        "url": "https://chatgpt.com/c/js-fixture",
+        "ready_state": "complete",
+        "route_kind": "CONVERSATION",
+        "session_state": "AUTHENTICATED",
+        "composer_state": "DETECTED",
+        "generation_state": "IDLE",
+        "matched_selector": "#prompt-textarea",
+        "candidate_count": 1,
+        "browser_host_id": "chatgpt-bridge-primary",
+        "error": None,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_decode_valid_json_string_result() -> None:
+    ok, info = decode_javascript_diagnostic_result(__import__("json").dumps(_canonical_js_result()))
+    assert ok is True
+    assert info["session"]["state"] == "AUTHENTICATED"
+    assert info["composer"]["state"] == "DETECTED"
+    assert info["generation"] == "IDLE"
+
+
+def test_decode_valid_dict_result() -> None:
+    ok, info = decode_javascript_diagnostic_result(_canonical_js_result())
+    assert ok is True
+    assert info["route_kind"] == "CONVERSATION"
+
+
+def test_decode_none_result() -> None:
+    ok, info = decode_javascript_diagnostic_result(None)
+    assert ok is False
+    assert info["error"] == "JAVASCRIPT_RESULT_EMPTY"
+
+
+def test_decode_malformed_json_result() -> None:
+    ok, info = decode_javascript_diagnostic_result("{not-json")
+    assert ok is False
+    assert info["error"] == "JAVASCRIPT_RESULT_PARSE_FAILED"
+
+
+def test_decode_json_array_result() -> None:
+    ok, info = decode_javascript_diagnostic_result("[1,2,3]")
+    assert ok is False
+    assert info["error"] == "JAVASCRIPT_RESULT_INVALID_TYPE"
+
+
+def test_decode_missing_key_result() -> None:
+    payload = _canonical_js_result()
+    payload.pop("browser_host_id")
+    ok, info = decode_javascript_diagnostic_result(payload)
+    assert ok is False
+    assert info["error"] == "JAVASCRIPT_RESULT_SCHEMA_INVALID"
+
+
+def test_decode_promise_none_simulation_not_login_required() -> None:
+    ok, info = decode_javascript_diagnostic_result(None)
+    assert ok is False
+    assert info["error"] == "JAVASCRIPT_RESULT_EMPTY"
+
+
+def test_canonical_javascript_uses_json_stringify_and_no_promise() -> None:
+    assert "JSON.stringify" in CHATGPT_DOM_PROBE_JS
+    assert "Promise" not in CHATGPT_DOM_PROBE_JS
+    assert "async " not in CHATGPT_DOM_PROBE_JS
+    assert "await " not in CHATGPT_DOM_PROBE_JS
+
+
+def test_decoded_authenticated_session_composer_and_idle_generation() -> None:
+    ok, info = decode_javascript_diagnostic_result(__import__("json").dumps(_canonical_js_result()))
+    assert ok is True
+    assert info["session"]["state"] == "AUTHENTICATED"
+    assert info["composer"]["state"] == "DETECTED"
+    assert info["generation"] == "IDLE"
+
+
+def test_decoded_result_has_no_sensitive_content() -> None:
+    ok, info = decode_javascript_diagnostic_result(__import__("json").dumps(_canonical_js_result()))
+    assert ok is True
+    serialized = str(info).lower()
+    assert "innertext" not in serialized
+    assert "innerhtml" not in serialized
+    assert "cookie" not in serialized
+    assert "token" not in serialized
+    assert "authorization" not in serialized
