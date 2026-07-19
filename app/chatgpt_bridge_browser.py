@@ -23,6 +23,7 @@ TEMP_ROOT = Path(r"D:\temp\chatgpt-bridge")
 TARGET_CONFIG_PATH = Path(r"D:\config\chatgpt-bridge\target.json")
 TARGET_HISTORY_PATH = STATE_ROOT / "target-history.jsonl"
 LIVE_DIAGNOSTIC_LOG_PATH = STATE_ROOT / "live-diagnostic.jsonl"
+BROWSER_STATE_PATH = STATE_ROOT / "browser-state.json"
 CYCLES_ROOT = STATE_ROOT / "cycles"
 RESPONSES_ROOT = Path(r"D:\communication\responses")
 ALLOWED_CHATGPT_PREFIX = "https://chatgpt.com/"
@@ -247,6 +248,50 @@ def _route_kind(url: str) -> str:
     return "OTHER"
 
 
+def _sanitize_chatgpt_url(url: str) -> str:
+    parts = urlsplit(str(url or "").strip())
+    scheme = parts.scheme.lower()
+    host = (parts.hostname or "").lower()
+    path = parts.path or "/"
+    if path != "/" and path.endswith("/"):
+        path = path.rstrip("/")
+    return urlunsplit((scheme, host, path, "", ""))
+
+
+def _is_allowed_chatgpt_url(url: str) -> bool:
+    try:
+        parts = urlsplit(str(url or "").strip())
+    except ValueError:
+        return False
+    return parts.scheme.lower() == "https" and (parts.hostname or "").lower() == "chatgpt.com"
+
+
+def _is_useful_browser_state_url(url: str) -> bool:
+    if not _is_allowed_chatgpt_url(url):
+        return False
+    route = _route_kind(url)
+    return route not in {"LOGIN", "INVALID"}
+
+
+def _browser_state_payload(url: str, *, now: str, browser_host_id: str = BROWSER_HOST_ID) -> dict[str, Any]:
+    sanitized = _sanitize_chatgpt_url(url)
+    return {
+        "schema_version": 1,
+        "last_url": sanitized,
+        "last_route_kind": _route_kind(sanitized),
+        "updated_at": now,
+        "browser_host_id": browser_host_id,
+    }
+
+
+def _choose_start_url(target_url: str, browser_state_url: str) -> str:
+    if _is_useful_browser_state_url(target_url):
+        return _sanitize_chatgpt_url(target_url)
+    if _is_useful_browser_state_url(browser_state_url):
+        return _sanitize_chatgpt_url(browser_state_url)
+    return ALLOWED_CHATGPT_PREFIX
+
+
 def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest().upper()
 
@@ -295,14 +340,16 @@ class ChatGPTBridgeBrowserHost(QObject):
         self._validation_in_progress = False
         self._live_diagnostic_in_progress = False
         self.page.loadStarted.connect(self._mark_navigation_started)
-        self.page.urlChanged.connect(lambda _url: self._mark_navigation_started())
+        self.page.urlChanged.connect(self._on_url_changed)
         self.page.loadFinished.connect(lambda _ok: self.refresh_status())
+        QTimer.singleShot(0, self.restore_or_start)
 
     @property
     def host_id(self) -> str:
         return BROWSER_HOST_ID
 
     def widget(self) -> QWebEngineView:
+        self.ensure_view_bound()
         return self.view
 
     def _mark_navigation_started(self) -> None:
@@ -310,6 +357,65 @@ class ChatGPTBridgeBrowserHost(QObject):
         self._last_status.session = "SESSION_LOADING"
         self._last_status.composer = "LOADING"
         self.status_changed.emit(self.status_snapshot())
+
+    def _on_url_changed(self, url: QUrl) -> None:
+        self._mark_navigation_started()
+        self._remember_browser_url(url.toString())
+
+    def ensure_view_bound(self) -> dict[str, Any]:
+        if self.view.page() is not self.page:
+            self.view.setPage(self.page)
+        return self.technical_identity()
+
+    def technical_identity(self) -> dict[str, Any]:
+        visible_page = self.view.page()
+        return {
+            "browser_host_id": self.host_id,
+            "browser_host_object_id": id(self),
+            "profile_object_id": id(self.profile),
+            "host_page_object_id": id(self.page),
+            "visible_view_object_id": id(self.view),
+            "visible_view_page_object_id": id(visible_page),
+            "same_page_object": visible_page is self.page,
+            "profile_path": str(PROFILE_ROOT),
+            "current_url": self.current_url(),
+            "navigation_epoch": self._navigation_epoch,
+        }
+
+    def _read_browser_state_url(self) -> str:
+        if not BROWSER_STATE_PATH.exists():
+            return ""
+        try:
+            data = json.loads(BROWSER_STATE_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return ""
+        if not isinstance(data, dict) or data.get("browser_host_id") != self.host_id:
+            return ""
+        return str(data.get("last_url") or "")
+
+    def _remember_browser_url(self, url: str) -> None:
+        if not _is_useful_browser_state_url(url):
+            return
+        payload = _browser_state_payload(url, now=self._now(), browser_host_id=self.host_id)
+        try:
+            _write_json_atomic(BROWSER_STATE_PATH, payload)
+        except OSError:
+            self._last_error = "BROWSER_STATE_WRITE_FAILED"
+
+    def _startup_url(self) -> str:
+        return _choose_start_url(self.target_url(), self._read_browser_state_url())
+
+    def restore_or_start(self) -> dict[str, Any]:
+        identity = self.ensure_view_bound()
+        current = self.current_url()
+        if current and current != "about:blank":
+            self._remember_browser_url(current)
+            return {**identity, "restored": False, "url": current}
+        url = self._startup_url()
+        self._last_error = "BROWSER_RESTORING"
+        self._mark_navigation_started()
+        self.page.setUrl(QUrl(url))
+        return {**self.technical_identity(), "restored": True, "url": url}
 
     def _write_live_diagnostic_event(self, event: str, *, info: dict[str, Any] | None = None, error_code: str | None = None) -> None:
         info = info if isinstance(info, dict) else {}
@@ -433,7 +539,8 @@ class ChatGPTBridgeBrowserHost(QObject):
         return str(self._target.get("target_url", "") or "")
 
     def navigate_to_target(self) -> None:
-        url = self.target_url() or ALLOWED_CHATGPT_PREFIX
+        self.ensure_view_bound()
+        url = self.target_url() or self._startup_url()
         self._mark_navigation_started()
         self.page.setUrl(QUrl(url))
 
@@ -657,6 +764,9 @@ class ChatGPTBridgeBrowserHost(QObject):
             if callback:
                 callback(self.status_snapshot())
             return
+        self.ensure_view_bound()
+        if not self.current_url() or self.current_url() == "about:blank":
+            self.restore_or_start()
         if self._live_diagnostic_in_progress:
             if callback:
                 callback(self.status_snapshot())
@@ -713,8 +823,11 @@ class FakeBridgeBrowserHost(QObject):
         self.visible_page_dependency = "NONE"
         self.sends = 0
         self.page_identity = "fake-page"
+        self.view_identity = "fake-view"
+        self.view_page_identity = self.page_identity
         self._target_url = "https://chatgpt.com/c/fake-conversation" if target_configured else ""
         self._current_url = self._target_url or "https://chatgpt.com/"
+        self.browser_state_url = ""
         self.applied_urls: list[str] = []
         self.navigations: list[str] = []
         self.cleared = False
@@ -731,8 +844,36 @@ class FakeBridgeBrowserHost(QObject):
         self._current_url = url
 
     def navigate_to_target(self) -> None:
-        self.navigations.append(self._target_url)
-        self._current_url = self._target_url
+        url = self._target_url or _choose_start_url("", self.browser_state_url)
+        self.navigations.append(url)
+        self._current_url = url
+
+    def ensure_view_bound(self) -> dict[str, Any]:
+        self.view_page_identity = self.page_identity
+        return self.technical_identity()
+
+    def technical_identity(self) -> dict[str, Any]:
+        return {
+            "browser_host_id": BROWSER_HOST_ID,
+            "browser_host_object_id": id(self),
+            "profile_object_id": "fake-profile",
+            "host_page_object_id": self.page_identity,
+            "visible_view_object_id": self.view_identity,
+            "visible_view_page_object_id": self.view_page_identity,
+            "same_page_object": self.view_page_identity == self.page_identity,
+            "profile_path": str(PROFILE_ROOT),
+            "current_url": self._current_url,
+            "navigation_epoch": 0,
+        }
+
+    def restore_or_start(self) -> dict[str, Any]:
+        identity = self.ensure_view_bound()
+        if self._current_url and self._current_url != "about:blank":
+            return {**identity, "restored": False, "url": self._current_url}
+        url = _choose_start_url(self._target_url, self.browser_state_url)
+        self.navigations.append(url)
+        self._current_url = url
+        return {**self.technical_identity(), "restored": True, "url": url}
 
     def widget(self) -> QWidget:
         from PySide6.QtWidgets import QWidget

@@ -10,6 +10,9 @@ from app.chatgpt_bridge_browser import (
     STATE_ROOT,
     TARGET_CONFIG_PATH,
     TRANSPORT_KIND,
+    _browser_state_payload,
+    _choose_start_url,
+    _is_useful_browser_state_url,
 )
 
 
@@ -139,6 +142,12 @@ class _ProbeHost(ChatGPTBridgeBrowserHost):
 
     def current_url(self) -> str:
         return "https://chatgpt.com/c/fixture"
+
+    def ensure_view_bound(self) -> dict:
+        return {"same_page_object": True}
+
+    def restore_or_start(self) -> dict:
+        return {"restored": False, "url": self.current_url()}
 
     def _write_live_diagnostic_event(self, *args, **kwargs) -> None:
         self.logged_events.append((args, kwargs))
@@ -313,3 +322,85 @@ def test_refresh_double_click_fake_has_single_active_call() -> None:
     host.refresh_status(lambda _status: None)
     host.refresh_status(lambda _status: None)
     assert host.refresh_calls == 2
+
+
+def test_restore_same_page_object_identity() -> None:
+    host = FakeBridgeBrowserHost()
+    identity = host.ensure_view_bound()
+    assert identity["same_page_object"] is True
+    assert identity["host_page_object_id"] == identity["visible_view_page_object_id"]
+
+
+def test_return_preserves_same_page_and_url() -> None:
+    host = FakeBridgeBrowserHost()
+    first = host.technical_identity()
+    host.set_current_url("https://chatgpt.com/c/return-fixture")
+    restored = host.restore_or_start()
+    assert restored["restored"] is False
+    assert host.current_url() == "https://chatgpt.com/c/return-fixture"
+    assert host.technical_identity()["host_page_object_id"] == first["host_page_object_id"]
+
+
+def test_tab_switch_preserves_bridge_page() -> None:
+    host = FakeBridgeBrowserHost()
+    host.set_current_url("https://chatgpt.com/c/tab-fixture")
+    page_id = host.technical_identity()["host_page_object_id"]
+    for _view in ("ChatGPT", "Terminal", "Arena", "Pages", "ChatGPT"):
+        host.ensure_view_bound()
+    assert host.current_url() == "https://chatgpt.com/c/tab-fixture"
+    assert host.technical_identity()["host_page_object_id"] == page_id
+
+
+def test_start_url_restores_browser_state_without_target() -> None:
+    assert _choose_start_url("", "https://chatgpt.com/c/from-state?model=gpt-5") == "https://chatgpt.com/c/from-state"
+
+
+def test_start_url_falls_back_without_state() -> None:
+    assert _choose_start_url("", "") == "https://chatgpt.com/"
+
+
+def test_blank_page_navigates_once_to_start_url() -> None:
+    host = FakeBridgeBrowserHost(target_configured=False)
+    host.set_current_url("")
+    host.browser_state_url = "https://chatgpt.com/c/restored"
+    result = host.restore_or_start()
+    assert result["restored"] is True
+    assert host.current_url() == "https://chatgpt.com/c/restored"
+    assert host.navigations == ["https://chatgpt.com/c/restored"]
+
+
+def test_target_config_wins_over_browser_state() -> None:
+    assert _choose_start_url(
+        "https://chatgpt.com/c/target",
+        "https://chatgpt.com/c/state",
+    ) == "https://chatgpt.com/c/target"
+
+
+def test_external_browser_state_url_is_rejected() -> None:
+    assert _is_useful_browser_state_url("https://example.com/c/not-chatgpt") is False
+    assert _choose_start_url("", "https://example.com/c/not-chatgpt") == "https://chatgpt.com/"
+
+
+def test_login_browser_state_url_is_not_restored() -> None:
+    assert _is_useful_browser_state_url("https://chatgpt.com/login") is False
+    assert _choose_start_url("", "https://chatgpt.com/login") == "https://chatgpt.com/"
+
+
+def test_browser_state_payload_has_no_secret_or_content_fields() -> None:
+    payload = _browser_state_payload(
+        "https://chatgpt.com/c/abc-123?temporary_token=secret#fragment",
+        now="2026-07-19T00:00:00+00:00",
+    )
+    assert payload["last_url"] == "https://chatgpt.com/c/abc-123"
+    serialized = str(payload).lower()
+    assert "cookie" not in serialized
+    assert "token" not in serialized
+    assert "message" not in serialized
+
+
+def test_restore_never_sends_or_creates_cycle() -> None:
+    host = FakeBridgeBrowserHost(target_configured=False)
+    host.set_current_url("about:blank")
+    host.restore_or_start()
+    assert host.sends == 0
+    assert "SEND_ATTEMPTED" not in str(host.navigations)

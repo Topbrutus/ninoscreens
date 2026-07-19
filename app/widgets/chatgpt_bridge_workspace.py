@@ -113,7 +113,7 @@ class ChatGPTBridgeWorkspace(QFrame):
         self.clear_target_button.clicked.connect(self.clear_target)
         self.target_url_edit.textChanged.connect(self.refresh_unapplied_indicator)
         self.host.status_changed.connect(self.apply_status)
-        self.refresh_status()
+        self.restore_browser_view()
 
     def apply_status(self, status: dict) -> None:
         for key, label in self.values.items():
@@ -121,6 +121,8 @@ class ChatGPTBridgeWorkspace(QFrame):
         self.refresh_unapplied_indicator()
 
     def refresh_status(self) -> None:
+        if hasattr(self.host, "ensure_view_bound"):
+            self.host.ensure_view_bound()
         self.refresh_button.setEnabled(False)
         self.values["session"].setText("SESSION_LOADING")
         self.values["composer"].setText("LOADING")
@@ -131,6 +133,11 @@ class ChatGPTBridgeWorkspace(QFrame):
             self.refresh_button.setEnabled(True)
 
         self.host.refresh_status(_done)
+
+    def restore_browser_view(self) -> None:
+        if hasattr(self.host, "restore_or_start"):
+            self.host.restore_or_start()
+        self.refresh_status()
 
     def run_diagnostic(self) -> None:
         self.host.diagnostic_without_send(self.apply_status)

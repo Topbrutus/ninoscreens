@@ -916,7 +916,7 @@ class MainWindow(QMainWindow):
     def show_chatgpt_bridge_page(self) -> None:
         self.app_state.active_view = "chatgpt"
         self.main_stack.setCurrentWidget(self.chatgpt_bridge_workspace)
-        self.chatgpt_bridge_workspace.refresh_status()
+        self.chatgpt_bridge_workspace.restore_browser_view()
         if self._restoring_session:
             return
         self._refresh_top_state()
@@ -1013,7 +1013,6 @@ class MainWindow(QMainWindow):
         self.show_tile_page(self.app_state.current_page_index)
 
     def return_from_chatgpt_bridge_page(self) -> None:
-        self.chatgpt_bridge_workspace.refresh_status()
         self.show_tile_page(self.app_state.current_page_index)
 
     def _resolve_run_backend(self) -> tuple[Path, Path, str] | None:
@@ -1370,6 +1369,7 @@ class MainWindow(QMainWindow):
             return
         if self.app_state.active_view == "chatgpt":
             self.main_stack.setCurrentWidget(self.chatgpt_bridge_workspace)
+            self.chatgpt_bridge_workspace.restore_browser_view()
             return
 
         self.main_stack.setCurrentWidget(self.page_stack)
