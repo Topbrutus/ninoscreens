@@ -35,6 +35,7 @@ from app.config import (
 )
 from app.direct_control import AgentCockpitController, AgentCommand, BlockedAction
 from app.arena_controller import ArenaController
+from app.chatgpt_bridge_browser import ChatGPTBridgeBrowserHost
 from app.jules_summary import (
     DEFAULT_SUMMARY_DIR,
     JulesSummary,
@@ -61,6 +62,7 @@ from app.web_media import WebMediaPermissionController
 from app.web_profile import build_shared_profile
 from app.widgets.dashboard_grid import DashboardGrid
 from app.widgets.arena_workspace import ArenaWorkspace
+from app.widgets.chatgpt_bridge_workspace import ChatGPTBridgeWorkspace
 from app.widgets.focus_view import FocusView
 from app.widgets.pages_bridge_workspace import PagesBridgeWorkspace
 from app.widgets.page_matrix import PageMatrix
@@ -105,6 +107,7 @@ class MainWindow(QMainWindow):
         self.page_grids: list[DashboardGrid] = []
         self.terminal_runtime = TerminalRuntime(start_dir=Path(__file__).resolve().parents[2])
         self.arena_controller = ArenaController()
+        self.chatgpt_bridge_host = ChatGPTBridgeBrowserHost(self)
         self.arena_controller.snapshot_signals.snapshot_ready.connect(self._on_arena_snapshot_ready)
         self.arena_controller.snapshot_signals.snapshot_failed.connect(self._on_arena_snapshot_failed)
         self._focused_tile_id: int | None = None
@@ -199,6 +202,11 @@ class MainWindow(QMainWindow):
         self.arena_button.setProperty("role", "arena")
         self.arena_button.clicked.connect(self.show_arena_page)
 
+        self.chatgpt_button = QPushButton("ChatGPT")
+        self.chatgpt_button.setProperty("compact", True)
+        self.chatgpt_button.setProperty("role", "nav")
+        self.chatgpt_button.clicked.connect(self.show_chatgpt_bridge_page)
+
         self.focus_exit_button = QPushButton("Quit focus")
         self.focus_exit_button.setProperty("compact", True)
         self.focus_exit_button.clicked.connect(self.exit_focus_mode)
@@ -213,6 +221,7 @@ class MainWindow(QMainWindow):
 
         controls_row1.addWidget(self.pages_button)
         controls_row1.addWidget(self.arena_button)
+        controls_row1.addWidget(self.chatgpt_button)
         controls_row1.addWidget(self.media_permissions_button)
         controls_row2.addWidget(self.focus_exit_button)
         controls_layout.addLayout(controls_row1)
@@ -250,12 +259,16 @@ class MainWindow(QMainWindow):
         self.arena_workspace = ArenaWorkspace(self.arena_controller)
         self.arena_workspace.back_requested.connect(self.return_from_arena_page)
 
+        self.chatgpt_bridge_workspace = ChatGPTBridgeWorkspace(self.chatgpt_bridge_host)
+        self.chatgpt_bridge_workspace.back_requested.connect(self.return_from_chatgpt_bridge_page)
+
         self.focus_view = FocusView()
         self.focus_view.tile_switch_requested.connect(self.set_split_tile)
         self.focus_view.split_visibility_changed.connect(self._on_split_visibility_changed)
 
         self.main_stack.addWidget(self.page_stack)
         self.main_stack.addWidget(self.arena_workspace)
+        self.main_stack.addWidget(self.chatgpt_bridge_workspace)
         self.main_stack.addWidget(self.focus_view)
         root.addWidget(self.main_stack, 1)
 
@@ -900,6 +913,15 @@ class MainWindow(QMainWindow):
         self._refresh_top_state()
         self.schedule_session_save()
 
+    def show_chatgpt_bridge_page(self) -> None:
+        self.app_state.active_view = "chatgpt"
+        self.main_stack.setCurrentWidget(self.chatgpt_bridge_workspace)
+        self.chatgpt_bridge_workspace.refresh_status()
+        if self._restoring_session:
+            return
+        self._refresh_top_state()
+        self.schedule_session_save()
+
     def show_terminal_page(self) -> None:
         self.terminal_workspace.activate()
         self.app_state.active_view = "run"
@@ -988,6 +1010,10 @@ class MainWindow(QMainWindow):
     def return_from_pages_bridge_page(self) -> None:
         self.pages_workspace.sync_target_from_state()
         self.pages_workspace.refresh_from_cache()
+        self.show_tile_page(self.app_state.current_page_index)
+
+    def return_from_chatgpt_bridge_page(self) -> None:
+        self.chatgpt_bridge_workspace.refresh_status()
         self.show_tile_page(self.app_state.current_page_index)
 
     def _resolve_run_backend(self) -> tuple[Path, Path, str] | None:
@@ -1342,6 +1368,9 @@ class MainWindow(QMainWindow):
         if self.app_state.active_view == "arena":
             self.main_stack.setCurrentWidget(self.arena_workspace)
             return
+        if self.app_state.active_view == "chatgpt":
+            self.main_stack.setCurrentWidget(self.chatgpt_bridge_workspace)
+            return
 
         self.main_stack.setCurrentWidget(self.page_stack)
         if self.app_state.active_view == "run":
@@ -1396,6 +1425,8 @@ class MainWindow(QMainWindow):
             self.mode_label.setText("PAGES / BRIDGE")
         elif self.app_state.active_view == "arena":
             self.mode_label.setText("ARÈNE")
+        elif self.app_state.active_view == "chatgpt":
+            self.mode_label.setText("ChatGPT Bridge")
         elif self.app_state.active_view == "run":
             self.mode_label.setText("Terminal")
         elif self._focused_tile_id is not None:
@@ -1519,7 +1550,7 @@ class MainWindow(QMainWindow):
                     0,
                 )
                 active_view = str(payload.get("active_view", "tiles") or "tiles")
-                self.app_state.active_view = active_view if active_view in {"tiles", "run", "arena", "pages"} else "tiles"
+                self.app_state.active_view = active_view if active_view in {"tiles", "run", "arena", "pages", "chatgpt"} else "tiles"
                 bridge_target_tile_id_raw = payload.get("bridge_target_tile_id")
                 bridge_target_tile_id = None
                 if bridge_target_tile_id_raw is not None:
@@ -1549,6 +1580,8 @@ class MainWindow(QMainWindow):
                         self.show_pages_bridge_page()
                     elif self.app_state.active_view == "arena":
                         self.show_arena_page()
+                    elif self.app_state.active_view == "chatgpt":
+                        self.show_chatgpt_bridge_page()
                     else:
                         self.show_tile_page(self.app_state.current_page_index)
 
