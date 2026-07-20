@@ -1175,3 +1175,11 @@ class FakeBridgeBrowserHost(QObject):
             "arena_status": "ARENA_ONLINE" if reason == "READY" else "ARENA_DEGRADED",
             "arena_reason": reason,
         }
+
+    def insert_bridge_message(self, cycle_id: str, transmission_key: str, expected_state: str, message: str, callback: Callable[[dict[str, Any]], None]) -> None:
+        self.text_entered += 1
+        callback({"ok": True, "inserted_length": len(message)})
+
+    def send_bridge_message_once(self, cycle_id: str, transmission_key: str, callback: Callable[[dict[str, Any]], None]) -> None:
+        self.sends += 1
+        callback({"ok": True, "clicked": True})

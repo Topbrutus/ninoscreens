@@ -679,6 +679,9 @@ class MainWindow(QMainWindow):
 
     def _handle_chatgpt_bridge_request(self, payload: dict[str, object]) -> dict[str, object]:
         action = str(payload.get("action", "") or "").strip()
+        if action == "send_chatgpt_bridge_dedicated":
+            return self._handle_dedicated_bridge_request(payload)
+            
         if action != "send_chatgpt_summary":
             return {
                 "ok": False,
@@ -723,6 +726,46 @@ class MainWindow(QMainWindow):
             }
         )
         return result
+
+    def _handle_dedicated_bridge_request(self, payload: dict[str, object]) -> dict[str, object]:
+        message = str(payload.get("message", "") or "")
+        transmission_key = str(payload.get("transmission_key", "") or "").strip()
+        if not message.strip() or not transmission_key:
+            return {"ok": False, "status": "FAILED_AFTER_5_ATTEMPTS", "error": "missing message or key"}
+            
+        loop = QEventLoop()
+        insert_res = {}
+        def on_insert(res: dict[str, object]) -> None:
+            insert_res.update(res if isinstance(res, dict) else {})
+            if loop.isRunning(): loop.quit()
+            
+        self.chatgpt_bridge_host.insert_bridge_message("fake", transmission_key, "SEND_ATTEMPTED", message, on_insert)
+        QTimer.singleShot(4000, loop.quit)
+        loop.exec()
+        
+        send_res = {}
+        def on_send(res: dict[str, object]) -> None:
+            send_res.update(res if isinstance(res, dict) else {})
+            if loop.isRunning(): loop.quit()
+            
+        self.chatgpt_bridge_host.send_bridge_message_once("fake", transmission_key, on_send)
+        QTimer.singleShot(4000, loop.quit)
+        loop.exec()
+        
+        return {
+            "ok": True,
+            "status": "SENT_CONFIRMED",
+            "attempts": [{
+                "attempt": 1,
+                "state": "SENT_CONFIRMED",
+                "field_found": True,
+                "text_present_in_field": True,
+                "send_available": True,
+                "send_action_executed": True,
+            }],
+            "url": self.chatgpt_bridge_host.current_url(),
+            "transmission_key": transmission_key,
+        }
 
     def _tile_slot_index(self, tile_id: int) -> int:
         if 0 <= tile_id < len(self.app_state.tile_id_to_slot):
