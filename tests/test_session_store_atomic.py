@@ -41,7 +41,7 @@ class TestSessionStoreAtomic(unittest.TestCase):
         self.appdata_dir.mkdir(parents=True, exist_ok=True)
         self.session_file = self.appdata_dir / "dashboard_session.json"
         self.bak_file = self.session_file.with_name(self.session_file.name + ".bak")
-        
+
         self.env_patcher = patch.dict(os.environ, {"NINO_DATA_ROOT": str(self.data_root)})
         self.env_patcher.start()
 
@@ -52,17 +52,17 @@ class TestSessionStoreAtomic(unittest.TestCase):
     def test_normal_save_and_load(self):
         payload = {"schema_version": 5, "test": "valeur"}
         save_session_payload(payload)
-        
+
         loaded = load_session_payload()
         self.assertEqual(loaded, payload)
 
     def test_utf8_french_characters(self):
         payload = {"schema_version": 5, "message": "éàçù€îï"}
         save_session_payload(payload)
-        
+
         loaded = load_session_payload()
         self.assertEqual(loaded, payload)
-        
+
         raw_bytes = self.session_file.read_bytes()
         self.assertIn("éàçù€îï".encode("utf-8"), raw_bytes)
 
@@ -70,7 +70,7 @@ class TestSessionStoreAtomic(unittest.TestCase):
         with patch("app.session_store.os.replace") as mock_replace:
             payload = {"schema_version": 5}
             save_session_payload(payload)
-            
+
             self.assertTrue(mock_replace.called)
             temp_path = mock_replace.call_args[0][0]
             self.assertTrue(str(temp_path).startswith(str(self.appdata_dir)))
@@ -86,29 +86,29 @@ class TestSessionStoreAtomic(unittest.TestCase):
         with patch("app.session_store.json.loads") as mock_loads:
             # json.loads fails when parsing the temporary file
             mock_loads.side_effect = [None, json.JSONDecodeError("msg", "doc", 0)]
-            
+
             payload = {"schema_version": 5}
             with self.assertRaises(json.JSONDecodeError):
                 save_session_payload(payload)
-            
+
             self.assertFalse(self.session_file.exists())
 
     def test_interrupt_during_write_preserves_previous(self):
         payload1 = {"schema_version": 5, "version": 1}
         save_session_payload(payload1)
-        
+
         with patch("app.session_store.tempfile.NamedTemporaryFile") as mock_temp:
             mock_temp.side_effect = KeyboardInterrupt()
-            
+
             with self.assertRaises(KeyboardInterrupt):
                 save_session_payload({"schema_version": 5, "version": 2})
-                
+
         self.assertEqual(load_session_payload(), payload1)
 
     def test_failure_on_replace_preserves_previous_and_removes_temp(self):
         payload1 = {"schema_version": 5, "version": 1}
         save_session_payload(payload1)
-        
+
         with patch("app.session_store.os.replace") as mock_replace:
             def side_effect(src, dst):
                 if dst == self.session_file:
@@ -116,10 +116,10 @@ class TestSessionStoreAtomic(unittest.TestCase):
                 else:
                     os.rename(src, dst)
             mock_replace.side_effect = side_effect
-            
+
             with self.assertRaises(OSError):
                 save_session_payload({"schema_version": 5, "version": 2})
-                
+
         self.assertEqual(load_session_payload(), payload1)
         temp_files_after = set(self.appdata_dir.iterdir())
         self.assertEqual(len(temp_files_after), 2)
@@ -128,30 +128,30 @@ class TestSessionStoreAtomic(unittest.TestCase):
     def test_new_session_invalid_no_replacement(self):
         payload1 = {"schema_version": 5, "version": 1}
         save_session_payload(payload1)
-        
+
         payload2 = {"schema_version": 5, "version": object()}
         with self.assertRaises(TypeError):
             save_session_payload(payload2)
-            
+
         self.assertEqual(load_session_payload(), payload1)
 
     def test_restore_from_bak_when_session_corrupt(self):
         payload = {"schema_version": 5, "version": 1}
         save_session_payload(payload)
         save_session_payload({"schema_version": 5, "version": 2})
-        
+
         self.session_file.write_text("invalid json")
-        
+
         loaded = load_session_payload()
         self.assertEqual(loaded, {"schema_version": 5, "version": 1})
 
     def test_bak_invalid_fails_cleanly(self):
         save_session_payload({"schema_version": 5, "version": 1})
         save_session_payload({"schema_version": 5, "version": 2})
-        
+
         self.session_file.write_text("invalid")
         self.bak_file.write_text("invalid also")
-        
+
         loaded = load_session_payload()
         self.assertIsNone(loaded)
 
@@ -159,11 +159,11 @@ class TestSessionStoreAtomic(unittest.TestCase):
         save_session_payload({"schema_version": 5, "version": 1})
         self.assertTrue(self.session_file.exists())
         self.assertFalse(self.bak_file.exists())
-        
+
         save_session_payload({"schema_version": 5, "version": 2})
         self.assertTrue(self.session_file.exists())
         self.assertTrue(self.bak_file.exists())
-        
+
         self.assertEqual(load_session_payload(), {"schema_version": 5, "version": 2})
 
     def test_no_fake_api_key_when_secret_reference_present(self):
@@ -177,7 +177,7 @@ class TestSessionStoreAtomic(unittest.TestCase):
         with patch("app.session_store.os.name", "posix"):
             with patch("app.session_store.os.open") as mock_open:
                 mock_open.side_effect = OSError("Not a directory")
-                
+
                 class DummyPath:
                     def __str__(self): return "dummy"
                 _sync_dir(DummyPath())
@@ -223,19 +223,19 @@ class TestSessionStoreAtomic(unittest.TestCase):
         save_session_payload({"valid": "v2"})
         self.assertTrue(self.bak_file.exists())
         bak_content = self.bak_file.read_text()
-        
+
         with self.assertRaises(ValueError):
             save_session_payload({"password": "NINO_TEST_SECRET_DO_NOT_PERSIST_7C91A2"})
-            
+
         self.assertEqual(self.bak_file.read_text(), bak_content)
 
     def test_no_tmp_created_after_rejection(self):
         save_session_payload({"valid": "yes"})
         files_before = set(self.appdata_dir.iterdir())
-        
+
         with self.assertRaises(ValueError):
             save_session_payload({"api_key": "NINO_TEST_SECRET_DO_NOT_PERSIST_7C91A2"})
-            
+
         files_after = set(self.appdata_dir.iterdir())
         self.assertEqual(files_before, files_after)
 

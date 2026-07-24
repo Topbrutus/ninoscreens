@@ -90,7 +90,7 @@ jobs:
             '\.bak\.'
             '\.backup\.'
           )
-          
+
           found=0
           for pattern in "${forbidden_patterns[@]}"; do
             if git ls-files | grep -E "$pattern"; then
@@ -98,7 +98,7 @@ jobs:
               found=1
             fi
           done
-          
+
           if [ $found -eq 1 ]; then
             echo "FAILED: Forbidden artifacts are tracked by Git"
             exit 1
@@ -115,7 +115,7 @@ jobs:
             'secret.*key'
             'api.*key'
           )
-          
+
           found=0
           for pattern in "${private_key_patterns[@]}"; do
             if git ls-files | grep -iE "$pattern"; then
@@ -123,7 +123,7 @@ jobs:
               found=1
             fi
           done
-          
+
           if [ $found -eq 1 ]; then
             echo "FAILED: Private keys or secrets are tracked by Git"
             exit 1
@@ -135,10 +135,10 @@ jobs:
         run: |
           cat >> $GITHUB_STEP_SUMMARY << 'EOF'
           ## CI Summary
-          
+
           - **Python Version**: ${{ matrix.python-version }}
           - **Status**: ${{ job.status == 'success' && '✓ Passed' || '✗ Failed' }}
-          
+
           ### Checks Run:
           - ✓ pyproject.toml validation
           - ✓ Ruff linting

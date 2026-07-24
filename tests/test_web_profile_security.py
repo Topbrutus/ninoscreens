@@ -106,17 +106,17 @@ class TestSecurityPolicy(unittest.TestCase):
 
     def test_no_sensitive_data_in_logs(self):
         from app.web_profile import SecurityInterceptor
-        
+
         interceptor = SecurityInterceptor(self.policy)
         info = MagicMock()
         info.requestUrl().toString.return_value = "file:///C:/Users/casho/secret.txt"
         info.firstPartyUrl().toString.return_value = "https://evil.com/query?token=123"
         info.requestUrl().scheme.return_value = "file"
         info.firstPartyUrl().scheme.return_value = "https"
-        
+
         with self.assertLogs("app.web_profile", level="WARNING") as cm:
             interceptor.interceptRequest(info)
-            
+
         info.block.assert_called_once_with(True)
         # Check logs don't contain the paths
         for record in cm.output:
@@ -156,7 +156,7 @@ class TestWebProfileConfiguration(unittest.TestCase):
             if obj is QWebEngineSettings.WebAttribute:
                 return False
             return original_hasattr(obj, attr)
-            
+
         with patch('builtins.hasattr', side_effect=mock_hasattr):
             profile = build_shared_profile(None)
             self.assertIsNotNone(profile)
