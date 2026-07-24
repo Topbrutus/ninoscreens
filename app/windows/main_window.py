@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from dataclasses import replace
+from pathlib import Path
 
-from PySide6.QtCore import QCoreApplication, QEvent, QFileSystemWatcher, QTimer
+from PySide6.QtCore import QCoreApplication, QEvent, QEventLoop, QFileSystemWatcher, Qt, QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QFrame,
@@ -21,21 +21,21 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.arena_controller import ArenaController
+from app.chatgpt_bridge_browser import ChatGPTBridgeBrowserHost
 from app.config import (
     APP_MARGIN,
     APP_NAME,
     DEFAULT_WINDOW_SIZE,
     MINIMUM_WINDOW_SIZE,
     PAGE_COUNT,
-    SESSION_SAVE_DEBOUNCE_MS,
     RUN_PAGE_INDEX,
+    SESSION_SAVE_DEBOUNCE_MS,
     TILE_COUNT,
     TILES_PER_PAGE,
     app_data_root,
 )
 from app.direct_control import AgentCockpitController, AgentCommand, BlockedAction
-from app.arena_controller import ArenaController
-from app.chatgpt_bridge_browser import ChatGPTBridgeBrowserHost
 from app.jules_summary import (
     DEFAULT_SUMMARY_DIR,
     JulesSummary,
@@ -49,8 +49,9 @@ from app.jules_summary import (
     summary_from_payload,
 )
 from app.session_store import load_session_payload, save_session_payload, serialize_app_state
-from app.state import AppState, TileState
 from app.state import (
+    AppState,
+    TileState,
     derive_slot_to_tile_id,
     derive_slot_to_tile_id_from_tile_positions,
     derive_tile_id_to_slot,
@@ -60,12 +61,12 @@ from app.state import (
 from app.terminal import TerminalRuntime
 from app.web_media import WebMediaPermissionController
 from app.web_profile import build_shared_profile
-from app.widgets.dashboard_grid import DashboardGrid
 from app.widgets.arena_workspace import ArenaWorkspace
 from app.widgets.chatgpt_bridge_workspace import ChatGPTBridgeWorkspace
+from app.widgets.dashboard_grid import DashboardGrid
 from app.widgets.focus_view import FocusView
-from app.widgets.pages_bridge_workspace import PagesBridgeWorkspace
 from app.widgets.page_matrix import PageMatrix
+from app.widgets.pages_bridge_workspace import PagesBridgeWorkspace
 from app.widgets.run_workspace import RunWorkspace
 from app.widgets.terminal_workspace import TerminalWorkspace
 from app.widgets.web_tile import WebTile
@@ -681,6 +682,17 @@ class MainWindow(QMainWindow):
         action = str(payload.get("action", "") or "").strip()
         if action == "send_chatgpt_bridge_dedicated":
             return self._handle_dedicated_bridge_request(payload)
+        if action == "read_assistant_response":
+            loop = QEventLoop()
+            res_dict = {}
+            def on_read(res: dict[str, object]) -> None:
+                res_dict.update(res if isinstance(res, dict) else {})
+                if loop.isRunning():
+                    loop.quit()
+            self.chatgpt_bridge_host.read_stable_assistant_response(on_read)
+            QTimer.singleShot(4000, loop.quit)
+            loop.exec()
+            return {"ok": True, "response_text": res_dict.get("response_text", "")}
             
         if action != "send_chatgpt_summary":
             return {
@@ -737,7 +749,8 @@ class MainWindow(QMainWindow):
         insert_res = {}
         def on_insert(res: dict[str, object]) -> None:
             insert_res.update(res if isinstance(res, dict) else {})
-            if loop.isRunning(): loop.quit()
+            if loop.isRunning():
+                loop.quit()
             
         self.chatgpt_bridge_host.insert_bridge_message("fake", transmission_key, "SEND_ATTEMPTED", message, on_insert)
         QTimer.singleShot(4000, loop.quit)
@@ -746,7 +759,8 @@ class MainWindow(QMainWindow):
         send_res = {}
         def on_send(res: dict[str, object]) -> None:
             send_res.update(res if isinstance(res, dict) else {})
-            if loop.isRunning(): loop.quit()
+            if loop.isRunning():
+                loop.quit()
             
         self.chatgpt_bridge_host.send_bridge_message_once("fake", transmission_key, on_send)
         QTimer.singleShot(4000, loop.quit)
@@ -845,7 +859,7 @@ class MainWindow(QMainWindow):
 
         for grid in self.page_grids:
             for tile in self.tiles.values():
-                grid.remove_tile(tile)
+                grid.layout_.removeWidget(tile)
 
         for tile_id, tile in self.tiles.items():
             parent = tile.parent()
@@ -931,6 +945,7 @@ class MainWindow(QMainWindow):
             self._show_active_workspace()
         else:
             self.page_stack.setCurrentIndex(self.app_state.current_page_index)
+        MainWindow._sync_tile_background_activity(self)
         if self._restoring_session:
             return
         self._refresh_top_state()
@@ -939,6 +954,7 @@ class MainWindow(QMainWindow):
     def show_arena_page(self) -> None:
         self.app_state.active_view = "arena"
         self.main_stack.setCurrentWidget(self.arena_workspace)
+        MainWindow._sync_tile_background_activity(self)
         if self._restoring_session:
             return
         self.arena_workspace.refresh_view()
@@ -948,6 +964,7 @@ class MainWindow(QMainWindow):
     def show_pages_bridge_page(self) -> None:
         self.app_state.active_view = "pages"
         self.main_stack.setCurrentWidget(self.pages_workspace)
+        MainWindow._sync_tile_background_activity(self)
         self.pages_workspace.sync_target_from_state()
         if self._restoring_session:
             self.pages_workspace.refresh_from_cache()
@@ -960,6 +977,7 @@ class MainWindow(QMainWindow):
         self.app_state.active_view = "chatgpt"
         self.main_stack.setCurrentWidget(self.chatgpt_bridge_workspace)
         self.chatgpt_bridge_workspace.restore_browser_view()
+        MainWindow._sync_tile_background_activity(self)
         if self._restoring_session:
             return
         self._refresh_top_state()
@@ -970,6 +988,7 @@ class MainWindow(QMainWindow):
         self.app_state.active_view = "run"
         if self._focused_tile_id is None:
             self._show_active_workspace()
+        MainWindow._sync_tile_background_activity(self)
         self.terminal_workspace.request_terminal_focus()
         self._refresh_top_state()
         self.schedule_session_save()
@@ -1325,7 +1344,7 @@ class MainWindow(QMainWindow):
         if parent is getattr(self.focus_view, "split_tile_host", None):
             return
         slot_index = self._tile_slot_index(tile_id)
-        self.page_grids[slot_index // TILES_PER_PAGE].remove_tile(tile)
+        self.page_grids[slot_index // TILES_PER_PAGE].layout_.removeWidget(tile)
 
     def _return_focus_tile_to_grid(self, tile_id: int) -> None:
         tile = self.tiles[tile_id]
@@ -1406,13 +1425,16 @@ class MainWindow(QMainWindow):
     def _show_active_workspace(self) -> None:
         if self.app_state.active_view == "pages":
             self.main_stack.setCurrentWidget(self.pages_workspace)
+            MainWindow._sync_tile_background_activity(self)
             return
         if self.app_state.active_view == "arena":
             self.main_stack.setCurrentWidget(self.arena_workspace)
+            MainWindow._sync_tile_background_activity(self)
             return
         if self.app_state.active_view == "chatgpt":
             self.main_stack.setCurrentWidget(self.chatgpt_bridge_workspace)
             self.chatgpt_bridge_workspace.restore_browser_view()
+            MainWindow._sync_tile_background_activity(self)
             return
 
         self.main_stack.setCurrentWidget(self.page_stack)
@@ -1420,6 +1442,40 @@ class MainWindow(QMainWindow):
             self.page_stack.setCurrentIndex(RUN_PAGE_INDEX)
         else:
             self.page_stack.setCurrentIndex(self.app_state.current_page_index)
+        MainWindow._sync_tile_background_activity(self)
+
+    def _visible_tile_ids(self) -> set[int]:
+        current_widget = self.main_stack.currentWidget()
+        if current_widget is self.focus_view:
+            visible_tile_ids: set[int] = set()
+            if self._focused_tile_id is not None:
+                visible_tile_ids.add(self._focused_tile_id)
+            if self.focus_view.is_split_panel_visible() and self._split_tile_id is not None:
+                visible_tile_ids.add(self._split_tile_id)
+            return visible_tile_ids
+
+        if current_widget is self.page_stack:
+            page_index = self.page_stack.currentIndex()
+            if 0 <= page_index < PAGE_COUNT:
+                return {
+                    tile_id
+                    for tile_id in self.tiles
+                    if self._tile_page_index(tile_id) == page_index
+                }
+
+        return set()
+
+    def _sync_tile_background_activity(self) -> None:
+        visible_tile_ids = MainWindow._visible_tile_ids(self)
+        for tile_id, tile in self.tiles.items():
+            if tile_id in visible_tile_ids:
+                resume = getattr(tile, "resume_background_activity", None)
+                if callable(resume):
+                    resume()
+                continue
+            suspend = getattr(tile, "suspend_background_activity", None)
+            if callable(suspend):
+                suspend()
 
     def _sync_focus_flags(self) -> None:
         in_focus_view = self.main_stack.currentWidget() is self.focus_view
@@ -1436,6 +1492,7 @@ class MainWindow(QMainWindow):
                 panel_visible=in_focus_view and is_active and has_permanent_split and split_visible,
             )
 
+        MainWindow._sync_tile_background_activity(self)
         self.app_state.tiles = [
             replace(tile.state) for _, tile in sorted(self.tiles.items())
         ]

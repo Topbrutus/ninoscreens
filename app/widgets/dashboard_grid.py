@@ -27,4 +27,9 @@ class DashboardGrid(QWidget):
         self.layout_.addWidget(tile, row, col)
 
     def remove_tile(self, tile: QWidget) -> None:
+        close_tile = getattr(tile, "close_tile", None)
+        if callable(close_tile):
+            close_tile()
         self.layout_.removeWidget(tile)
+        if callable(close_tile):
+            tile.setParent(None)

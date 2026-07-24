@@ -1,15 +1,13 @@
-
 from __future__ import annotations
 
-from dataclasses import replace
-from datetime import datetime
 import json
 import time
+from dataclasses import replace
+from datetime import datetime
 
-from PySide6.QtCore import QEventLoop, QTimer, Qt, QUrl, Signal, QSize
-from PySide6.QtGui import QColor, QPainter, QPixmap, QIcon
+from PySide6.QtCore import QEventLoop, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtTest import QTest
-
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
@@ -77,6 +75,10 @@ class WebTile(QFrame):
     web_page_ready = Signal(object)
     web_page_released = Signal()
 
+    ACTIVITY_ACTIVE = "active"
+    ACTIVITY_SUSPENDED = "suspended"
+    ACTIVITY_CLOSING = "closing"
+
     def __init__(self, tile_id: int, profile: QWebEngineProfile, parent=None) -> None:
         super().__init__(parent)
         self.tile_id = tile_id
@@ -100,6 +102,13 @@ class WebTile(QFrame):
         self._media_last_error = ""
         self._web_text_submission_busy = False
         self._web_text_one_shot_used = False
+        self._is_closing = False
+        self._delete_later_requested_ids: set[int] = set()
+        self._background_activity_state = self.ACTIVITY_ACTIVE
+        self._background_activity_strategy = ""
+        self._suspension_generation = 0
+        self._suspension_script_generation: int | None = None
+        self._last_suspension_result_generation: int | None = None
 
         self.setObjectName("TileFrame")
         self.setProperty("focused", False)
@@ -193,10 +202,14 @@ class WebTile(QFrame):
         self.split_button.style().polish(self.split_button)
 
     def load_google_page(self) -> None:
+        if self._is_closing:
+            return
         if self._navigate_from_text("https://www.google.com/"):
             self.request_browser_focus()
 
     def copy_displayed_url(self) -> None:
+        if self._is_closing:
+            return
         if self._browser_container is None:
             return
         text = self.browser_url_edit.text().strip()
@@ -212,11 +225,15 @@ class WebTile(QFrame):
         self._show_toolbar_feedback("URL copiée")
 
     def request_browser_focus(self) -> None:
+        if self._is_closing:
+            return
         if self._browser_container is None or self._web_view is None:
             return
         self._browser_focus_timer.start(0)
 
     def _apply_browser_focus(self) -> None:
+        if self._is_closing:
+            return
         if self._browser_container is None or self._web_view is None:
             return
         if not self.isVisible() or not self._browser_container.isVisible() or not self._web_view.isVisible():
@@ -226,6 +243,8 @@ class WebTile(QFrame):
         self._web_view.activateWindow()
 
     def _show_toolbar_feedback(self, text: str) -> None:
+        if self._is_closing:
+            return
         self.toolbar_feedback_label.setText(text)
         self.toolbar_feedback_label.show()
         self._toolbar_feedback_timer.stop()
@@ -302,6 +321,8 @@ class WebTile(QFrame):
             button.setFixedSize(fixed_size)
 
     def _ensure_browser_page(self) -> None:
+        if self._is_closing:
+            return
         if self._browser_container is not None:
             return
 
@@ -441,33 +462,335 @@ class WebTile(QFrame):
 
         self._browser_container = container
         self.stack.addWidget(container)
+        self._invalidate_suspension_callbacks()
+        self._background_activity_state = self.ACTIVITY_ACTIVE
+        self._background_activity_strategy = ""
         self.set_toolbar_focus_mode(self._toolbar_focus_mode)
         self._apply_navigation_state()
         self.web_page_ready.emit(self._page)
 
     def _on_focus_button_clicked(self) -> None:
+        if self._is_closing:
+            return
         if self._toolbar_focus_mode:
             self.grid_requested.emit(self.tile_id)
         else:
             self.focus_requested.emit(self.tile_id)
 
     def _on_split_button_clicked(self) -> None:
+        if self._is_closing:
+            return
         if self._toolbar_focus_mode and self._state.has_content:
             self.split_requested.emit(self.tile_id)
 
     def load_from_empty_input(self) -> None:
+        if self._is_closing:
+            return
         if self._navigate_from_text(self.empty_url_edit.text()):
             self.request_browser_focus()
 
     def load_from_browser_input(self) -> None:
+        if self._is_closing:
+            return
         if self._navigate_from_text(self.browser_url_edit.text()):
             self.request_browser_focus()
 
     def open_url_text(self, raw_text: str) -> None:
+        if self._is_closing:
+            return
         self._navigate_from_text(raw_text)
 
     def current_page_url(self) -> str:
         return self._state.current_url.strip()
+
+    def suspend_background_activity(self) -> None:
+        if self._is_closing or self._background_activity_state == self.ACTIVITY_CLOSING:
+            return
+        if self._background_activity_state == self.ACTIVITY_SUSPENDED:
+            return
+        if self._page is None or self._web_view is None or not self._state.has_content:
+            return
+
+        self._suspension_generation += 1
+        generation = self._suspension_generation
+        if self._set_native_lifecycle_state("Frozen"):
+            self._background_activity_state = self.ACTIVITY_SUSPENDED
+            self._background_activity_strategy = "native-frozen"
+            return
+
+        self._background_activity_state = self.ACTIVITY_SUSPENDED
+        self._background_activity_strategy = "media-fallback"
+        self._run_suspension_javascript(
+            self._build_media_suspend_script(generation),
+            generation,
+        )
+
+    def resume_background_activity(self) -> None:
+        if self._is_closing or self._background_activity_state == self.ACTIVITY_CLOSING:
+            return
+        if self._background_activity_state == self.ACTIVITY_ACTIVE:
+            return
+        if self._page is None or self._web_view is None:
+            self._invalidate_suspension_callbacks()
+            self._background_activity_state = self.ACTIVITY_ACTIVE
+            self._background_activity_strategy = ""
+            return
+
+        self._suspension_generation += 1
+        generation = self._suspension_generation
+        used_native = self._set_native_lifecycle_state("Active")
+        if not used_native or self._background_activity_strategy == "media-fallback":
+            self._run_suspension_javascript(
+                self._build_media_resume_script(generation),
+                generation,
+            )
+        self._background_activity_state = self.ACTIVITY_ACTIVE
+        self._background_activity_strategy = ""
+
+    def _invalidate_suspension_callbacks(self) -> None:
+        self._suspension_generation += 1
+        self._suspension_script_generation = None
+
+    def _webengine_lifecycle_capability(self, state_name: str):
+        page = self._page
+        if page is None:
+            return None
+        set_lifecycle_state = getattr(page, "setLifecycleState", None)
+        if not callable(set_lifecycle_state):
+            return None
+        lifecycle_state_type = getattr(page, "LifecycleState", None)
+        if lifecycle_state_type is None:
+            lifecycle_state_type = getattr(type(page), "LifecycleState", None)
+        if lifecycle_state_type is None:
+            return None
+        state = getattr(lifecycle_state_type, state_name, None)
+        if state is None:
+            return None
+        return state
+
+    def _set_native_lifecycle_state(self, state_name: str) -> bool:
+        page = self._page
+        if page is None or self._is_closing:
+            return False
+        state = self._webengine_lifecycle_capability(state_name)
+        if state is None:
+            return False
+        set_lifecycle_state = getattr(page, "setLifecycleState", None)
+        if not callable(set_lifecycle_state):
+            return False
+        try:
+            set_lifecycle_state(state)
+        except RuntimeError:
+            return False
+
+        lifecycle_state = getattr(page, "lifecycleState", None)
+        if not callable(lifecycle_state):
+            return True
+        try:
+            return lifecycle_state() == state
+        except RuntimeError:
+            return False
+
+    def _run_suspension_javascript(self, script: str, generation: int) -> None:
+        if self._page is None or self._is_closing:
+            return
+        if self._suspension_script_generation == generation:
+            return
+        self._suspension_script_generation = generation
+
+        def on_result(value: object) -> None:
+            self._handle_suspension_javascript_result(generation, value)
+
+        try:
+            self._page.runJavaScript(script, on_result)
+        except RuntimeError:
+            return
+
+    def _handle_suspension_javascript_result(self, generation: int, _value: object) -> None:
+        if self._is_closing or generation != self._suspension_generation:
+            return
+        self._last_suspension_result_generation = generation
+
+    def _build_media_suspend_script(self, generation: int) -> str:
+        generation_json = json.dumps(generation)
+        return f"""
+        (() => {{
+          const generation = {generation_json};
+          const namespace = "__ninoScreensSuspension";
+          const state = window[namespace] || {{
+            mediaIds: new WeakMap(),
+            nextMediaId: 1,
+            previouslyPlayingIds: [],
+            suspendGeneration: null,
+            resumeGeneration: null,
+          }};
+          window[namespace] = state;
+          if (state.suspendGeneration === generation) {{
+            return JSON.stringify({{ ok: true, generation, alreadyApplied: true }});
+          }}
+          const activeIds = [];
+          const mediaElements = Array.from(document.querySelectorAll("audio, video"));
+          for (const media of mediaElements) {{
+            if (!state.mediaIds.has(media)) {{
+              state.mediaIds.set(media, `media-${{state.nextMediaId++}}`);
+            }}
+            const mediaId = state.mediaIds.get(media);
+            const wasPlaying = !media.paused && !media.ended;
+            if (!wasPlaying) {{
+              continue;
+            }}
+            activeIds.push(mediaId);
+            try {{
+              media.pause();
+            }} catch (_error) {{
+            }}
+          }}
+          state.previouslyPlayingIds = activeIds;
+          state.suspendGeneration = generation;
+          return JSON.stringify({{ ok: true, generation, pausedCount: activeIds.length }});
+        }})()
+        """
+
+    def _build_media_resume_script(self, generation: int) -> str:
+        generation_json = json.dumps(generation)
+        return f"""
+        (() => {{
+          const generation = {generation_json};
+          const namespace = "__ninoScreensSuspension";
+          const state = window[namespace];
+          if (!state) {{
+            return JSON.stringify({{ ok: true, generation, resumedCount: 0 }});
+          }}
+          if (state.resumeGeneration === generation) {{
+            return JSON.stringify({{ ok: true, generation, alreadyApplied: true }});
+          }}
+          const targetIds = new Set(Array.isArray(state.previouslyPlayingIds) ? state.previouslyPlayingIds : []);
+          let resumedCount = 0;
+          const mediaElements = Array.from(document.querySelectorAll("audio, video"));
+          for (const media of mediaElements) {{
+            const mediaId = state.mediaIds && state.mediaIds.get ? state.mediaIds.get(media) : null;
+            if (!mediaId || !targetIds.has(mediaId)) {{
+              continue;
+            }}
+            try {{
+              const result = media.play();
+              resumedCount += 1;
+              if (result && typeof result.catch === "function") {{
+                result.catch(() => undefined);
+              }}
+            }} catch (_error) {{
+            }}
+          }}
+          state.previouslyPlayingIds = [];
+          state.resumeGeneration = generation;
+          return JSON.stringify({{ ok: true, generation, resumedCount }});
+        }})()
+        """
+
+    def close_tile(self) -> None:
+        if self._is_closing:
+            return
+        self._is_closing = True
+        self._background_activity_state = self.ACTIVITY_CLOSING
+        self._background_activity_strategy = ""
+        self._invalidate_suspension_callbacks()
+        self._web_text_submission_busy = False
+        self._stop_owned_timers()
+        self._release_browser_resources(stop_media_probe=False)
+        self._state.is_loading = False
+        self._request_delete_later_once(self)
+
+    def _stop_owned_timers(self) -> None:
+        for timer_name in (
+            "_toolbar_feedback_timer",
+            "_browser_focus_timer",
+            "thumbnail_timer",
+            "media_poll_timer",
+        ):
+            timer = getattr(self, timer_name, None)
+            if timer is None:
+                continue
+            try:
+                timer.stop()
+            except RuntimeError:
+                continue
+
+    def _disconnect_signal(self, signal, slot) -> None:
+        try:
+            signal.disconnect(slot)
+        except (TypeError, RuntimeError):
+            return
+
+    def _disconnect_browser_page_signals(self, page) -> None:
+        for signal, slot in (
+            (page.popup_url_ready, self._load_qurl),
+            (page.fullScreenRequested, self._handle_page_fullscreen_request),
+            (page.iconChanged, self._on_icon_changed),
+            (page.loadStarted, self._on_load_started),
+            (page.loadFinished, self._on_load_finished),
+            (page.loadProgress, self._on_load_progress),
+            (page.urlChanged, self._on_url_changed),
+            (page.titleChanged, self._on_title_changed),
+        ):
+            self._disconnect_signal(signal, slot)
+
+    def _request_delete_later_once(self, obj) -> None:
+        obj_id = id(obj)
+        if obj_id in self._delete_later_requested_ids:
+            return
+        self._delete_later_requested_ids.add(obj_id)
+        try:
+            obj.deleteLater()
+        except RuntimeError:
+            return
+
+    def _release_browser_resources(self, *, stop_media_probe: bool = True) -> None:
+        container = self._browser_container
+        view = self._web_view
+        page = self._page
+
+        if container is None and view is None and page is None:
+            if stop_media_probe:
+                self._stop_media_probe()
+            return
+
+        self._stop_media_capture()
+        if stop_media_probe:
+            self._stop_media_probe()
+        self._web_text_submission_busy = False
+
+        if view is not None:
+            try:
+                view.stop()
+            except RuntimeError:
+                view = None
+
+        if page is not None:
+            self._disconnect_browser_page_signals(page)
+
+        self.web_page_released.emit()
+
+        if container is not None:
+            self.stack.removeWidget(container)
+
+        self._browser_container = None
+        self._web_view = None
+        self._page = None
+        self._media_probe_installed = False
+
+        page_parent = None
+        if page is not None:
+            try:
+                page_parent = page.parent()
+            except RuntimeError:
+                page_parent = None
+
+        if page is not None and page_parent is self:
+            self._request_delete_later_once(page)
+        if view is not None:
+            self._request_delete_later_once(view)
+        if container is not None:
+            self._request_delete_later_once(container)
 
     def _qt_sleep(self, timeout_ms: int) -> None:
         if timeout_ms <= 0:
@@ -477,13 +800,21 @@ class WebTile(QFrame):
         loop.exec()
 
     def _run_javascript_sync(self, script: str, timeout_ms: int = 4000) -> object:
+        if self._is_closing:
+            raise RuntimeError("QWebEnginePage indisponible.")
         if self._page is None:
             raise RuntimeError("QWebEnginePage indisponible.")
 
         loop = QEventLoop()
-        result: dict[str, object] = {"ready": False, "value": None}
+        result: dict[str, object] = {"ready": False, "value": None, "cancelled": False}
 
         def on_result(value: object) -> None:
+            if self._is_closing:
+                result["ready"] = True
+                result["cancelled"] = True
+                if loop.isRunning():
+                    loop.quit()
+                return
             result["ready"] = True
             result["value"] = value
             if loop.isRunning():
@@ -500,6 +831,8 @@ class WebTile(QFrame):
 
         if not result["ready"]:
             raise TimeoutError("La requête JavaScript a expiré.")
+        if result["cancelled"]:
+            raise RuntimeError("QWebEnginePage détruit ou indisponible.")
 
         return result["value"]
 
@@ -515,7 +848,7 @@ class WebTile(QFrame):
         return payload
 
     def read_chatgpt_assistant_state(self) -> dict[str, object]:
-        if self._page is None or self._web_view is None or not self._state.has_content:
+        if self._is_closing or self._page is None or self._web_view is None or not self._state.has_content:
             return {
                 "ok": False,
                 "stage": "page",
@@ -568,6 +901,12 @@ class WebTile(QFrame):
         deadline = time.monotonic() + max(1.0, timeout_ms / 1000)
         last_text = ""
         while time.monotonic() < deadline:
+            if self._is_closing:
+                return {
+                    "ok": False,
+                    "stage": "page",
+                    "error": "active web page unavailable",
+                }
             self._qt_sleep(1000)
             state = self.read_chatgpt_assistant_state()
             if not state.get("ok"):
@@ -671,7 +1010,7 @@ class WebTile(QFrame):
         """
 
     def inspect_chatgpt_bridge_message(self, text: str, transmission_key: str) -> dict[str, object]:
-        if self._page is None or self._web_view is None or not self._state.has_content:
+        if self._is_closing or self._page is None or self._web_view is None or not self._state.has_content:
             return {
                 "ok": False,
                 "stage": "page",
@@ -786,6 +1125,13 @@ class WebTile(QFrame):
         max_attempts: int = 5,
         retry_delay_ms: int = 30000,
     ) -> dict[str, object]:
+        if self._is_closing:
+            return {
+                "ok": False,
+                "status": "FAILED_AFTER_5_ATTEMPTS",
+                "attempts": [],
+                "error": "active web page unavailable",
+            }
         attempts: list[dict[str, object]] = []
         max_attempts = max(1, int(max_attempts))
         retry_delay_ms = max(0, int(retry_delay_ms))
@@ -1342,7 +1688,7 @@ class WebTile(QFrame):
         submit: bool,
         one_shot: bool = True,
     ) -> dict[str, object]:
-        if self._page is None or self._web_view is None or not self._state.has_content:
+        if self._is_closing or self._page is None or self._web_view is None or not self._state.has_content:
             return {
                 "ok": False,
                 "stage": "page",
@@ -1512,10 +1858,12 @@ class WebTile(QFrame):
             self._web_text_submission_busy = False
 
     def reload_current(self) -> None:
-        if self._web_view is not None and self._state.has_content:
+        if not self._is_closing and self._web_view is not None and self._state.has_content:
             self._web_view.reload()
 
     def restore_from_session(self, current_url: str, zoom_factor: float) -> None:
+        if self._is_closing:
+            return
         clean_url = current_url.strip()
         if not clean_url:
             if self._browser_container is None and not self._state.current_url and not self._state.has_content and self._state.status == TileVisualStatus.EMPTY:
@@ -1535,12 +1883,16 @@ class WebTile(QFrame):
         self._apply_navigation_state()
 
     def _navigate_from_text(self, raw_text: str) -> bool:
+        if self._is_closing:
+            return False
         result = normalize_user_url(raw_text)
         if not result.ok:
             self.show_input_error(result.error)
             return False
         self.clear_errors()
         self._ensure_browser_page()
+        if self._browser_container is None:
+            return False
         self.stack.setCurrentWidget(self._browser_container)
         self.browser_url_edit.setText(result.normalized_text)
         self.empty_url_edit.setText(result.normalized_text)
@@ -1551,8 +1903,15 @@ class WebTile(QFrame):
         return True
 
     def _load_qurl(self, qurl: QUrl) -> None:
+        if self._is_closing:
+            return
         if self._web_view is None:
             self._ensure_browser_page()
+        if self._browser_container is None or self._web_view is None:
+            return
+        self._invalidate_suspension_callbacks()
+        self._background_activity_state = self.ACTIVITY_ACTIVE
+        self._background_activity_strategy = ""
         self.stack.setCurrentWidget(self._browser_container)
         self._state.has_content = True
         self._state.status = TileVisualStatus.LOADING
@@ -1579,7 +1938,7 @@ class WebTile(QFrame):
         self._state.error_message = ""
 
     def adjust_zoom(self, delta: float) -> None:
-        if self._web_view is None:
+        if self._is_closing or self._web_view is None:
             return
         new_zoom = max(MIN_ZOOM, min(MAX_ZOOM, round(self._state.zoom_factor + delta, 2)))
         self._state.zoom_factor = new_zoom
@@ -1601,15 +1960,10 @@ class WebTile(QFrame):
             if self.stack.currentWidget() is not self.empty_page:
                 self.stack.setCurrentWidget(self.empty_page)
             return
-        if self._browser_container is not None:
-            self._stop_media_capture()
-            self.web_page_released.emit()
-            self.stack.removeWidget(self._browser_container)
-            self._browser_container.deleteLater()
-            self._browser_container = None
-            self._web_view = None
-            self._page = None
-        self._stop_media_probe()
+        self._invalidate_suspension_callbacks()
+        self._background_activity_state = self.ACTIVITY_ACTIVE
+        self._background_activity_strategy = ""
+        self._release_browser_resources()
         self._set_media_status(False, False)
         self.clear_media_message()
         self.empty_url_edit.clear()
@@ -1630,6 +1984,11 @@ class WebTile(QFrame):
         self._emit_state()
 
     def _on_load_started(self) -> None:
+        if self._is_closing:
+            return
+        self._invalidate_suspension_callbacks()
+        self._background_activity_state = self.ACTIVITY_ACTIVE
+        self._background_activity_strategy = ""
         self._stop_media_capture()
         self.clear_errors()
         self._media_probe_installed = False
@@ -1642,11 +2001,15 @@ class WebTile(QFrame):
         self._emit_state()
 
     def _on_load_progress(self, _progress: int) -> None:
+        if self._is_closing:
+            return
         self._state.is_loading = True
         self._state.status = TileVisualStatus.LOADING
         self._emit_state()
 
     def _on_load_finished(self, ok: bool) -> None:
+        if self._is_closing:
+            return
         self._state.is_loading = False
         if ok:
             self._state.status = TileVisualStatus.READY
@@ -1665,6 +2028,8 @@ class WebTile(QFrame):
         self._emit_state()
 
     def _on_url_changed(self, qurl: QUrl) -> None:
+        if self._is_closing:
+            return
         value = qurl.toString()
         self._state.current_url = value
         self._state.domain = qurl.host()
@@ -1675,11 +2040,15 @@ class WebTile(QFrame):
         self._emit_state()
 
     def _on_title_changed(self, title: str) -> None:
+        if self._is_closing:
+            return
         self._state.title = title.strip()
         self.queue_thumbnail_capture()
         self._emit_state()
 
     def _on_icon_changed(self, icon: QIcon) -> None:
+        if self._is_closing:
+            return
         if icon.isNull():
             self._state.site_icon = None
         else:
@@ -1754,7 +2123,7 @@ class WebTile(QFrame):
         self.media_banner.hide()
 
     def _install_media_probe(self) -> None:
-        if self._page is None:
+        if self._is_closing or self._page is None:
             return
         script = """
         (() => {
@@ -1854,7 +2223,7 @@ class WebTile(QFrame):
         self._media_probe_installed = False
 
     def _poll_media_state(self) -> None:
-        if self._page is None or not self._state.has_content:
+        if self._is_closing or self._page is None or not self._state.has_content:
             return
         self._page.runJavaScript(
             "window.__ninoMediaState ? JSON.stringify(window.__ninoMediaState) : ''",
@@ -1862,6 +2231,8 @@ class WebTile(QFrame):
         )
 
     def _apply_polled_media_state(self, raw_value: object) -> None:
+        if self._is_closing:
+            return
         if not raw_value:
             return
         try:
@@ -1926,9 +2297,13 @@ class WebTile(QFrame):
         return "Erreur média inconnue."
 
     def queue_thumbnail_capture(self) -> None:
+        if self._is_closing:
+            return
         QTimer.singleShot(THUMBNAIL_CAPTURE_DELAY_MS, self.capture_thumbnail_if_possible)
 
     def capture_thumbnail_if_possible(self) -> None:
+        if self._is_closing:
+            return
         if not self.isVisible():
             return
         pixmap = self._build_thumbnail_pixmap()
