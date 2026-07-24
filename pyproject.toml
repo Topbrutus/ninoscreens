@@ -1,0 +1,97 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ninoscreens"
+version = "0.0.0"
+description = "Application desktop locale Python / PySide6 / Qt Widgets / Qt WebEngine."
+readme = "README.md"
+requires-python = ">=3.11"
+dynamic = ["dependencies"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-qt",
+    "ruff",
+    "mypy",
+]
+
+[project.scripts]
+ninoscreen = "main:main"
+
+[tool.setuptools]
+packages = ["app", "app.terminal", "app.widgets", "app.windows"]
+py-modules = ["main"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    "data",
+    ".ruff_cache",
+    ".mypy_cache",
+    ".pytest_cache",
+    "*.bak",
+    "*.bak.*",
+    "*.backup.*",
+    "../ninoscreens-artifact-backup-*",
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.mypy]
+python_version = "3.11"
+files = [
+    "app/config.py",
+    "app/url_utils.py",
+    "app/secret_store.py",
+]
+warn_unused_configs = true
+warn_redundant_casts = true
+exclude = [
+    "^\\.git/",
+    "^\\.venv/",
+    "^data/",
+    "^\\.ruff_cache/",
+    "^\\.mypy_cache/",
+    "^\\.pytest_cache/",
+    "__pycache__",
+    "\\.bak(\\..*)?$",
+    "\\.backup\\..*$",
+]
+
+[[tool.mypy.overrides]]
+module = [
+    "app.config",
+    "app.url_utils",
+    "app.secret_store",
+]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_return_any = true
+warn_unused_ignores = true
+disallow_any_generics = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = [
+    "PySide6",
+    "PySide6.*",
+    "keyring",
+    "keyring.*",
+]
+ignore_missing_imports = true
