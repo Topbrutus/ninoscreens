@@ -2,3 +2,10 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.pyc
+*.bak
+*.bak.*
+*.backup.*
+.venv/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
