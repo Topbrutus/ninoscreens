@@ -4,7 +4,7 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
-from app.config import APP_NAME
+from app.config import APP_NAME, configure_logging
 from app.focus_split_runtime import apply_runtime_focus_split
 from app.matrix_icon_fixes import apply_runtime_matrix_icon_fixes
 from app.styles import build_app_stylesheet
@@ -14,6 +14,8 @@ from app.windows.main_window import MainWindow
 
 def main() -> int:
     """Application entry point."""
+
+    configure_logging()
 
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
