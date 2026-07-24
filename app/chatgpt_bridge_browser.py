@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import tempfile
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
 from PySide6.QtCore import QObject, QTimer, QUrl, Signal
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
-
+from PySide6.QtWidgets import QWidget
 
 PROFILE_ROOT = Path(r"D:\runtime\profiles\chatgpt-bridge")
 CACHE_ROOT = Path(r"D:\runtime\cache\chatgpt-bridge")
@@ -217,6 +217,151 @@ CHATGPT_READ_RESPONSE_JS = r"""
   const candidates = Array.from(document.querySelectorAll("[data-message-author-role='assistant'], .assistant, main article"));
   const last = candidates.length ? candidates[candidates.length - 1] : null;
   return last ? (last.innerText || last.textContent || "") : "";
+})();
+"""
+
+
+CHATGPT_READ_ALOUD_DIAGNOSTIC_JS = r"""
+(() => {
+  try {
+    const visible = (element) => {
+      if (!element) return false;
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return (
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        rect.width > 0 &&
+        rect.height > 0
+      );
+    };
+
+    const disabled = (element) => (
+      Boolean(element.disabled) ||
+      element.getAttribute("aria-disabled") === "true"
+    );
+
+    const roleCandidates = Array.from(
+      document.querySelectorAll("[data-message-author-role='assistant']")
+    );
+    const articleCandidates = Array.from(
+      document.querySelectorAll("main article")
+    );
+
+    const lastAssistant = roleCandidates.length
+      ? roleCandidates[roleCandidates.length - 1]
+      : (articleCandidates.length
+          ? articleCandidates[articleCandidates.length - 1]
+          : null);
+
+    if (!lastAssistant) {
+      return {
+        ok: false,
+        status: "ASSISTANT_RESPONSE_NOT_FOUND",
+        candidate_count: 0,
+        matched_count: 0,
+        clicked: false
+      };
+    }
+
+    const scopes = [];
+    const addScope = (scope) => {
+      if (scope && !scopes.includes(scope)) scopes.push(scope);
+    };
+
+    addScope(lastAssistant);
+    addScope(lastAssistant.closest("article"));
+    addScope(lastAssistant.parentElement);
+    addScope(
+      lastAssistant.parentElement
+        ? lastAssistant.parentElement.parentElement
+        : null
+    );
+
+    const controls = [];
+    for (const scope of scopes) {
+      for (const control of Array.from(
+        scope.querySelectorAll("button, [role='button']")
+      )) {
+        if (!controls.includes(control)) controls.push(control);
+      }
+    }
+
+    const describe = (control) => [
+      control.getAttribute("aria-label") || "",
+      control.getAttribute("title") || "",
+      control.getAttribute("data-testid") || "",
+      control.textContent || ""
+    ].join(" ").trim().toLowerCase();
+
+    const positiveTerms = [
+      "read aloud",
+      "read message aloud",
+      "listen",
+      "lire à voix haute",
+      "ecouter",
+      "écouter",
+      "read-aloud",
+      "read_aloud",
+      "voice-play",
+      "audio-play",
+      "speaker"
+    ];
+
+    const negativeTerms = [
+      "stop",
+      "pause",
+      "arrêter",
+      "arreter"
+    ];
+
+    const matches = controls.filter((control) => {
+      const description = describe(control);
+      const positive = positiveTerms.some((term) =>
+        description.includes(term)
+      );
+      const negative = negativeTerms.some((term) =>
+        description.includes(term)
+      );
+      return positive && !negative;
+    });
+
+    const selected = matches.find((control) => !disabled(control)) || null;
+
+    if (!selected) {
+      return {
+        ok: false,
+        status: matches.length
+          ? "READ_ALOUD_DISABLED"
+          : "READ_ALOUD_NOT_FOUND",
+        candidate_count: controls.length,
+        matched_count: matches.length,
+        clicked: false
+      };
+    }
+
+    return {
+      ok: true,
+      status: visible(selected)
+        ? "READ_ALOUD_AVAILABLE"
+        : "READ_ALOUD_PRESENT_HIDDEN",
+      button_label: selected.getAttribute("aria-label") || "",
+      button_title: selected.getAttribute("title") || "",
+      data_testid: selected.getAttribute("data-testid") || "",
+      visible: visible(selected),
+      disabled: disabled(selected),
+      candidate_count: controls.length,
+      matched_count: matches.length,
+      clicked: false
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: "READ_ALOUD_DIAGNOSTIC_FAILED",
+      error: String(error && error.message ? error.message : error),
+      clicked: false
+    };
+  }
 })();
 """
 
@@ -999,6 +1144,38 @@ class ChatGPTBridgeBrowserHost(QObject):
         self.page.runJavaScript(CHATGPT_READ_RESPONSE_JS, _complete)
 
 
+    def diagnose_read_aloud_control(self, callback: Callable[[dict[str, Any]], None]) -> None:
+        def _complete(result: Any) -> None:
+            if isinstance(result, dict):
+                callback(result)
+                return
+
+            if isinstance(result, str):
+                try:
+                    decoded = json.loads(result)
+                except json.JSONDecodeError:
+                    decoded = {
+                        "ok": False,
+                        "status": "READ_ALOUD_RESULT_PARSE_FAILED",
+                        "clicked": False,
+                    }
+
+                if isinstance(decoded, dict):
+                    callback(decoded)
+                    return
+
+            callback({
+                "ok": False,
+                "status": "READ_ALOUD_RESULT_INVALID",
+                "clicked": False,
+            })
+
+        self.page.runJavaScript(
+            CHATGPT_READ_ALOUD_DIAGNOSTIC_JS,
+            _complete,
+        )
+
+
 class FakeBridgeBrowserHost(QObject):
     """Deterministic test double with the same public status semantics."""
     status_changed = Signal(dict)
@@ -1028,6 +1205,19 @@ class FakeBridgeBrowserHost(QObject):
         self.cycles_created = 0
         self.text_read = 0
         self.text_entered = 0
+
+    def diagnose_read_aloud_control(self, callback: Callable[[dict[str, Any]], None]) -> None:
+        callback({
+            "ok": True,
+            "status": "READ_ALOUD_AVAILABLE",
+            "button_label": "Read aloud",
+            "visible": True,
+            "disabled": False,
+            "candidate_count": 1,
+            "matched_count": 1,
+            "clicked": False,
+        })
+
 
     def target_url(self) -> str:
         return self._target_url
@@ -1071,8 +1261,6 @@ class FakeBridgeBrowserHost(QObject):
         return {**self.technical_identity(), "restored": True, "url": url}
 
     def widget(self) -> QWidget:
-        from PySide6.QtWidgets import QWidget
-
         return QWidget()
 
     def refresh_status(self, callback: Callable[[dict[str, Any]], None] | None = None) -> None:

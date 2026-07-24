@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import hashlib
 import json
-import uuid
 import time
+import uuid
+from copy import deepcopy
 from datetime import datetime
 from typing import Any
 from urllib.parse import urlsplit
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, Signal
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -19,9 +19,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
-    QPushButton,
     QPlainTextEdit,
+    QPushButton,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
@@ -121,6 +120,7 @@ class PagesBridgeWorkspace(QFrame):
         self._refresh_debounce_ms = 75
         self._refresh_timeout_ms = 15000
         self._refresh_shutdown = False
+        self._bridge_locked = False
         self._bridge_refresh_signals = _BridgeRefreshSignals()
         self._bridge_refresh_signals.snapshot_ready.connect(self._on_refresh_snapshot_ready)
         self._bridge_refresh_signals.snapshot_failed.connect(self._on_refresh_snapshot_failed)
@@ -161,6 +161,10 @@ class PagesBridgeWorkspace(QFrame):
 
         self.refresh_button = QPushButton("Rafraîchir")
         self.refresh_button.setProperty("compact", True)
+        self.lock_button = QPushButton("Verrouiller")
+        self.lock_button.setProperty("compact", True)
+        self.emergency_unlock_button = QPushButton("Emergency Unlock")
+        self.emergency_unlock_button.setProperty("compact", True)
 
         self.back_button = QPushButton("Retour aux pages")
         self.back_button.setProperty("compact", True)
@@ -169,6 +173,8 @@ class PagesBridgeWorkspace(QFrame):
         header.addLayout(title_column, 1)
         header.addWidget(self.state_badge)
         header.addWidget(self.refresh_button)
+        header.addWidget(self.lock_button)
+        header.addWidget(self.emergency_unlock_button)
         header.addWidget(self.back_button)
         root.addLayout(header)
 
@@ -214,6 +220,12 @@ class PagesBridgeWorkspace(QFrame):
         bridge_form.setVerticalSpacing(6)
 
         self.selected_target_value = QLabel("AMBIGU")
+        self.target_edit = QLineEdit()
+        self.target_edit.setPlaceholderText("Tile 1")
+        self.target_apply_button = QPushButton("Edit")
+        self.current_tile_value = QLabel("non mesuré")
+        self.current_index_value = QLabel("non mesuré")
+        self.current_url_value = QLabel("non mesuré")
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["test-only", "no-enter", "send"])
         self.project_edit = QLineEdit("PROJECT-UNASSIGNED")
@@ -230,6 +242,11 @@ class PagesBridgeWorkspace(QFrame):
 
         for label, value in (
             ("Cible", self.selected_target_value),
+            ("Cible éditable", self.target_edit),
+            ("Appliquer", self.target_apply_button),
+            ("Tile courant", self.current_tile_value),
+            ("Index courant", self.current_index_value),
+            ("URL courante", self.current_url_value),
             ("Mode", self.mode_combo),
             ("project_id", self.project_edit),
             ("job_id", self.job_edit),
@@ -245,10 +262,12 @@ class PagesBridgeWorkspace(QFrame):
         self.send_button.setProperty("role", "accent")
         self.cancel_button = QPushButton("Annuler")
         self.view_response_button = QPushButton("Voir la réponse")
+        self.new_conversation_button = QPushButton("New Conversation")
         for button in (
             self.send_button,
             self.cancel_button,
             self.view_response_button,
+            self.new_conversation_button,
         ):
             bridge_buttons.addWidget(button)
         bridge_buttons.addStretch(1)
@@ -294,13 +313,17 @@ class PagesBridgeWorkspace(QFrame):
         body.addWidget(self.health_card, 1, 1)
 
         self.refresh_button.clicked.connect(self.request_refresh_view)
+        self.lock_button.clicked.connect(self.toggle_lock)
+        self.emergency_unlock_button.clicked.connect(self.emergency_unlock)
         self.select_target_button.clicked.connect(self.select_current_row_as_target)
+        self.target_apply_button.clicked.connect(self.apply_target_from_editor)
         self.test_target_button.clicked.connect(self.test_selected_target)
         self.prepare_button.clicked.connect(self.prepare_draft_only)
         self.send_button.clicked.connect(self.send_current_draft)
         self.cancel_button.clicked.connect(self.cancel_draft)
         self.view_response_button.clicked.connect(self.view_last_response)
         self.view_report_button.clicked.connect(self.view_job_report)
+        self.new_conversation_button.clicked.connect(self.open_new_conversation)
 
         self.sync_target_from_state()
         self.refresh_from_cache()
@@ -398,6 +421,44 @@ class PagesBridgeWorkspace(QFrame):
         )
         self.state_changed.emit()
         self.refresh_from_cache()
+
+    def apply_target_from_editor(self) -> None:
+        raw_value = self.target_edit.text().strip()
+        if not raw_value:
+            self.set_target_tile_id(None)
+            self._append_result("CIBLE_EFFACEE: aucune cible explicite.")
+            self.state_changed.emit()
+            return
+        try:
+            tile_id = int(raw_value) - 1
+        except ValueError:
+            self._append_result("AMBIGU: la cible doit être un numéro de tile.")
+            return
+        if tile_id not in self.tiles:
+            self._append_result(f"Cible invalide: tile {tile_id + 1}.")
+            return
+        self.set_target_tile_id(tile_id)
+        self._append_result(f"CIBLE_EDITEE: tile {tile_id + 1} sélectionnée.")
+        self.state_changed.emit()
+
+    def toggle_lock(self) -> None:
+        self._bridge_locked = not self._bridge_locked
+        self.refresh_from_cache()
+
+    def emergency_unlock(self) -> None:
+        self._bridge_locked = False
+        self._append_result("EMERGENCY_UNLOCK: bridge déverrouillé.")
+        self.refresh_from_cache()
+
+    def open_new_conversation(self) -> None:
+        tile = self._selected_tile()
+        if tile is None:
+            self._append_result("BLOCKED: aucune cible ChatGPT explicite.")
+            return
+        tile.open_url_text("https://chatgpt.com/")
+        self._append_result(f"NEW_CONVERSATION: tile {tile.tile_id + 1} ouverte sur ChatGPT.")
+        self.state_changed.emit()
+        self.refresh_view()
 
     def _require_valid_selected_tile(self, blocked_message: str) -> WebTile | None:
         validation = self._validate_selected_target()
@@ -728,8 +789,24 @@ class PagesBridgeWorkspace(QFrame):
         actions_enabled = actions_enabled and not self._refresh_in_progress
         actions_enabled = actions_enabled and not self._refresh_requested
         actions_enabled = actions_enabled and bridge_status not in {"REFRESHING", "DEGRADED", "ERROR"}
-        for button in (self.test_target_button, self.prepare_button, self.send_button):
-            button.setEnabled(actions_enabled)
+        actions_enabled = actions_enabled and not self._bridge_locked
+        for widget in (
+            self.select_target_button,
+            self.target_edit,
+            self.target_apply_button,
+            self.test_target_button,
+            self.prepare_button,
+            self.send_button,
+            self.cancel_button,
+            self.view_response_button,
+            self.view_report_button,
+            self.new_conversation_button,
+        ):
+            widget.setEnabled(actions_enabled)
+        self.lock_button.setEnabled(not self._refresh_shutdown)
+        self.emergency_unlock_button.setEnabled(self._bridge_locked)
+        self.lock_button.setText("Déverrouiller" if self._bridge_locked else "Verrouiller")
+        self.target_edit.setText("" if self._selected_tile_id is None else str(self._selected_tile_id + 1))
 
     def _is_snapshot_stale(self) -> bool:
         if self._cached_snapshot is None:
@@ -846,13 +923,22 @@ class PagesBridgeWorkspace(QFrame):
 
     def _sync_selection_widgets(self) -> None:
         if self._selected_tile_id is None:
+            self.current_tile_value.setText("AMBIGU")
+            self.current_index_value.setText("non mesuré")
+            self.current_url_value.setText("non mesuré")
             return
         tile = self.tiles.get(self._selected_tile_id)
         if tile is None:
+            self.current_tile_value.setText(f"Tile {self._selected_tile_id + 1} • INVALIDE")
+            self.current_index_value.setText(str(self._selected_tile_id + 1))
+            self.current_url_value.setText("non mesuré")
             return
         current_session = self.session_edit.text().strip()
         if not current_session or current_session.startswith("SESSION-UNASSIGNED"):
             self.session_edit.setText(f"SESSION-TILE-{tile.tile_id + 1:02d}")
+        self.current_tile_value.setText(f"Tile {tile.tile_id + 1} • {tile.state.display_title}")
+        self.current_index_value.setText(str(tile.tile_id + 1))
+        self.current_url_value.setText(tile.state.current_url or "—")
 
     def _build_request_payload(self, tile: WebTile, *, mode: str) -> dict[str, Any]:
         message = self.message_edit.toPlainText().strip()

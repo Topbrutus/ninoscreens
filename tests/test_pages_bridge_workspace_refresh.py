@@ -13,7 +13,10 @@ from PySide6.QtGui import QShowEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from app.state import TileVisualStatus  # noqa: E402
-from app.widgets.pages_bridge_workspace import PagesBridgeWorkspace, _BridgeRefreshTask  # noqa: E402
+from app.widgets.pages_bridge_workspace import (  # noqa: E402
+    PagesBridgeWorkspace,
+    _BridgeRefreshTask,
+)
 
 
 def _make_snapshot() -> dict[str, object]:
@@ -40,8 +43,9 @@ class _FakeTile:
         status: TileVisualStatus = TileVisualStatus.EMPTY,
         is_loading: bool = False,
         has_content: bool = False,
-    ) -> None:
+        ) -> None:
         self.tile_id = tile_id
+        self.opened_urls: list[str] = []
         self.state = SimpleNamespace(
             display_title=title or f"Tile {tile_id + 1}",
             current_url=current_url,
@@ -49,6 +53,9 @@ class _FakeTile:
             is_loading=is_loading,
             has_content=has_content,
         )
+
+    def open_url_text(self, raw_text: str) -> None:
+        self.opened_urls.append(raw_text)
 
 
 class _FakeController:
@@ -231,6 +238,10 @@ class PagesBridgeWorkspaceRefreshTests(unittest.TestCase):
             prepare_enabled=True,
             send_enabled=True,
         )
+        self.assertEqual(workspace.target_edit.text(), "1")
+        self.assertEqual(workspace.current_tile_value.text(), "Tile 1 • ChatGPT")
+        self.assertEqual(workspace.current_index_value.text(), "1")
+        self.assertEqual(workspace.current_url_value.text(), "https://chatgpt.com/")
 
     def test_no_explicit_target_with_multiple_candidates_is_ambiguous(self) -> None:
         controller = _FakeController()
@@ -284,6 +295,47 @@ class PagesBridgeWorkspaceRefreshTests(unittest.TestCase):
             prepare_enabled=False,
             send_enabled=False,
         )
+
+    def test_editable_target_updates_persisted_selection(self) -> None:
+        workspace, _controller = self._build_workspace()
+        self._set_chatgpt_tile(workspace, 2)
+
+        workspace.target_edit.setText("3")
+        workspace.apply_target_from_editor()
+
+        self.assertEqual(workspace.app_state.bridge_target_tile_id, 2)
+        self.assertEqual(workspace.selected_target_value.text(), "Tile 3 • ChatGPT")
+        self.assertEqual(workspace.current_tile_value.text(), "Tile 3 • ChatGPT")
+
+    def test_lock_and_emergency_unlock_gate_actions(self) -> None:
+        workspace, _controller = self._build_workspace()
+        self._set_chatgpt_tile(workspace, 0)
+        workspace.app_state.bridge_target_tile_id = 0
+        workspace.sync_target_from_state()
+
+        workspace.toggle_lock()
+
+        self.assertTrue(workspace._bridge_locked)
+        self.assertFalse(workspace.test_target_button.isEnabled())
+        self.assertFalse(workspace.send_button.isEnabled())
+        self.assertTrue(workspace.emergency_unlock_button.isEnabled())
+
+        workspace.emergency_unlock()
+
+        self.assertFalse(workspace._bridge_locked)
+        self.assertTrue(workspace.test_target_button.isEnabled())
+        self.assertTrue(workspace.send_button.isEnabled())
+        self.assertFalse(workspace.emergency_unlock_button.isEnabled())
+
+    def test_new_conversation_opens_chatgpt_root_on_selected_tile(self) -> None:
+        workspace, _controller = self._build_workspace()
+        self._set_chatgpt_tile(workspace, 1)
+        workspace.app_state.bridge_target_tile_id = 1
+        workspace.sync_target_from_state()
+
+        workspace.open_new_conversation()
+
+        self.assertEqual(workspace.tiles[1].opened_urls, ["https://chatgpt.com/"])
 
     def test_missing_tile_disables_all_actions(self) -> None:
         controller = _FakeController()

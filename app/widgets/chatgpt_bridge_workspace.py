@@ -48,6 +48,7 @@ class ChatGPTBridgeWorkspace(QFrame):
         self.apply_target_button = QPushButton("Appliquer au Bridge")
         self.open_target_button = QPushButton("Ouvrir la cible")
         self.test_target_button = QPushButton("Tester sans envoyer")
+        self.read_aloud_test_button = QPushButton("D\u00e9tecter lecture")
         self.clear_target_button = QPushButton("Effacer la cible")
         self.unapplied_label = QLabel("")
         self.unapplied_label.setObjectName("WarningText")
@@ -57,8 +58,9 @@ class ChatGPTBridgeWorkspace(QFrame):
         target_layout.addWidget(self.apply_target_button, 0, 3)
         target_layout.addWidget(self.open_target_button, 1, 1)
         target_layout.addWidget(self.test_target_button, 1, 2)
+        target_layout.addWidget(self.read_aloud_test_button, 2, 2)
         target_layout.addWidget(self.clear_target_button, 1, 3)
-        target_layout.addWidget(self.unapplied_label, 2, 1, 1, 3)
+        target_layout.addWidget(self.unapplied_label, 3, 1, 1, 3)
         layout.addWidget(self.target_frame)
 
         self.status_frame = QFrame()
@@ -110,6 +112,7 @@ class ChatGPTBridgeWorkspace(QFrame):
         self.apply_target_button.clicked.connect(self.apply_target)
         self.open_target_button.clicked.connect(self.host.navigate_to_target)
         self.test_target_button.clicked.connect(self.run_diagnostic)
+        self.read_aloud_test_button.clicked.connect(self.run_read_aloud_diagnostic)
         self.clear_target_button.clicked.connect(self.clear_target)
         self.target_url_edit.textChanged.connect(self.refresh_unapplied_indicator)
         self.host.status_changed.connect(self.apply_status)
@@ -156,6 +159,50 @@ class ChatGPTBridgeWorkspace(QFrame):
                 QMessageBox.information(self, "Test sans envoi", "CIBLE VALIDE - AUCUN MESSAGE ENVOYE")
 
         self.host.diagnostic_without_send(_done, self.target_url_edit.text())
+
+    def run_read_aloud_diagnostic(self) -> None:
+        self.read_aloud_test_button.setEnabled(False)
+        self.read_aloud_test_button.setText("D\u00e9tection...")
+
+        def _done(result: dict) -> None:
+            self.read_aloud_test_button.setEnabled(True)
+            self.read_aloud_test_button.setText("D\u00e9tecter lecture")
+
+            status = str(
+                result.get("status")
+                or "READ_ALOUD_DIAGNOSTIC_FAILED"
+            )
+            label = str(
+                result.get("button_label")
+                or result.get("button_title")
+                or result.get("data_testid")
+                or "INCONNU"
+            )
+
+            if result.get("ok"):
+                QMessageBox.information(
+                    self,
+                    "Lecture vocale",
+                    (
+                        f"{status}\n"
+                        f"BOUTON: {label}\n"
+                        "AUCUN CLIC EFFECTU\u00c9"
+                    ),
+                )
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Lecture vocale",
+                    (
+                        f"{status}\n"
+                        f"CANDIDATS: {result.get('candidate_count', 0)}\n"
+                        f"CORRESPONDANCES: {result.get('matched_count', 0)}\n"
+                        "AUCUN CLIC EFFECTU\u00c9"
+                    ),
+                )
+
+        self.host.diagnose_read_aloud_control(_done)
+
 
     def use_current_url(self) -> None:
         self.target_url_edit.setText(self.host.current_url())
