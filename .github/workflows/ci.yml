@@ -1,0 +1,149 @@
+name: CI
+
+"on":
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+      - feature/**
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    name: Lint, Type Check, and Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.11"
+          - "3.12"
+          - "3.13"
+
+    env:
+      QT_QPA_PLATFORM: xcb
+      QTWEBENGINE_DISABLE_SANDBOX: "1"
+      QTWEBENGINE_CHROMIUM_FLAGS: "--disable-gpu"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip setuptools wheel
+
+      - name: Install Qt/Xvfb system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Validate pyproject.toml
+        run: |
+          python -c "import tomllib; tomllib.loads(open('pyproject.toml').read()); print('pyproject.toml is valid')"
+
+      - name: Run Ruff
+        run: python -m ruff check .
+
+      - name: Run Mypy
+        run: python -m mypy app/url_utils.py app/secret_store.py app/config.py
+
+      - name: Run QtWebEngine targeted tests
+        if: matrix.python-version == '3.13'
+        run: |
+          xvfb-run -a python -W error::ResourceWarning -m unittest -v \
+            tests.test_web_profile_security \
+            tests.test_web_tile_lifecycle \
+            tests.test_web_tile_suspension
+
+      - name: Run Tests
+        run: xvfb-run -a python -W error::ResourceWarning -m unittest discover -s tests
+
+      - name: Check for forbidden artifacts tracked by Git
+        run: |
+          set -e
+          forbidden_patterns=(
+            '\.pyc$'
+            '__pycache__'
+            '\.bak$'
+            '\.bak\.'
+            '\.backup\.'
+          )
+          
+          found=0
+          for pattern in "${forbidden_patterns[@]}"; do
+            if git ls-files | grep -E "$pattern"; then
+              echo "ERROR: Found tracked artifact matching pattern: $pattern"
+              found=1
+            fi
+          done
+          
+          if [ $found -eq 1 ]; then
+            echo "FAILED: Forbidden artifacts are tracked by Git"
+            exit 1
+          fi
+          echo "✓ No forbidden artifacts tracked"
+
+      - name: Check for common private keys tracked by Git
+        run: |
+          set -e
+          private_key_patterns=(
+            '^\.env$'
+            '\.pem$'
+            'private.*key'
+            'secret.*key'
+            'api.*key'
+          )
+          
+          found=0
+          for pattern in "${private_key_patterns[@]}"; do
+            if git ls-files | grep -iE "$pattern"; then
+              echo "ERROR: Found tracked file matching private key pattern: $pattern"
+              found=1
+            fi
+          done
+          
+          if [ $found -eq 1 ]; then
+            echo "FAILED: Private keys or secrets are tracked by Git"
+            exit 1
+          fi
+          echo "✓ No common private keys tracked"
+
+      - name: Generate GitHub Summary
+        if: always()
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          ## CI Summary
+          
+          - **Python Version**: ${{ matrix.python-version }}
+          - **Status**: ${{ job.status == 'success' && '✓ Passed' || '✗ Failed' }}
+          
+          ### Checks Run:
+          - ✓ pyproject.toml validation
+          - ✓ Ruff linting
+          - ✓ Mypy type checking
+          - ✓ Unit tests
+          - ✓ Forbidden artifacts check
+          - ✓ Private key check
+          EOF
