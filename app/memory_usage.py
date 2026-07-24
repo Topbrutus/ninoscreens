@@ -20,13 +20,13 @@ def _read_proc_rss_bytes(pid: int) -> int | None:
 def _read_psutil_memory_bytes(pid: int) -> int | None:
     try:
         import psutil  # type: ignore
-    except Except:
+    except Exception:
         return None
 
     try:
         process = psutil.Process(pid)
         return int(process.memory_info().rss)
-    except Except:
+    except Exception:
         return None
 
 
