@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import tempfile
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Mapping
 
 from app.config import app_data_root
-
 
 DEFAULT_SUMMARY_DIR = Path("D:/communication/resumes")
 TRANSMISSION_STORE_FILENAME = "jules_summary_transmissions.json"

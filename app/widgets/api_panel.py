@@ -16,7 +16,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.api_connectors import ApiConnectionSettings, get_service_definition, list_service_definitions
+from app.api_connectors import (
+    ApiConnectionSettings,
+    get_service_definition,
+    list_service_definitions,
+)
 
 
 @dataclass(frozen=True)

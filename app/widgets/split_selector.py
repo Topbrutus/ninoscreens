@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QGridLayout, QScrollArea, QVBoxLayout, QWidget
 
 from app.config import APP_MARGIN, TILE_COUNT
 from app.state import TileState
 from app.widgets.thumbnail_rail import ThumbnailCard
-
 
 _SPLIT_SELECTOR_COLUMNS = 2
 

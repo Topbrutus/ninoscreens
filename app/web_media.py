@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import os
-from pathlib import Path
-import socket
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import threading
+from dataclasses import dataclass
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Callable
-from urllib.parse import quote
 
-from PySide6.QtCore import QObject, Qt, QUrl, Signal
+from PySide6.QtCore import QObject, QUrl, Signal
 from PySide6.QtWebEngineCore import QWebEnginePermission, QWebEngineProfile
 from PySide6.QtWidgets import (
     QComboBox,
@@ -242,11 +240,10 @@ class LocalWebMediaTestServer:
         for port in range(TEST_MEDIA_PORT_START, TEST_MEDIA_PORT_END + 1):
             try:
                 directory = str(self.asset_root)
-                handler = lambda *args, directory=directory, **kwargs: _SilentStaticHandler(
-                    *args,
-                    directory=directory,
-                    **kwargs,
-                )
+
+                def handler(*args, directory=directory, **kwargs):
+                    return _SilentStaticHandler(*args, directory=directory, **kwargs)
+
                 server = ThreadingHTTPServer((self.host, port), handler)
                 break
             except OSError as exc:

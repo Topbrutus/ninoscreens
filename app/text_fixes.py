@@ -4,7 +4,6 @@ from typing import Any
 
 from PySide6.QtCore import QTimer
 
-
 _BAD_TO_GOOD = {
     "â¬…ø®": "⬅️",
     "â¬ï¸": "⬅️",

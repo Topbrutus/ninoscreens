@@ -1,19 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
+import threading
 from collections.abc import Awaitable
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
-import json
-import os
 from pathlib import Path
-import threading
 from typing import Any, Callable
 
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 from winpty import PtyProcess
-
 
 TERMINAL_HOST = "127.0.0.1"
 TERMINAL_PORT = int(os.environ.get("NINO_TERMINAL_PORT", "8765"))

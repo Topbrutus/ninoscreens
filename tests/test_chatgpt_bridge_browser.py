@@ -1,21 +1,19 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from app.chatgpt_bridge_browser import (
-    ChatGPTBridgeBrowserHost,
-    FakeBridgeBrowserHost,
-    PROFILE_ROOT,
     CACHE_ROOT,
+    CHATGPT_DOM_PROBE_JS,
+    PROFILE_ROOT,
     STATE_ROOT,
     TARGET_CONFIG_PATH,
     TARGET_HISTORY_PATH,
     TRANSPORT_KIND,
-    CHATGPT_DOM_PROBE_JS,
-    decode_javascript_diagnostic_result,
+    ChatGPTBridgeBrowserHost,
+    FakeBridgeBrowserHost,
     _browser_state_payload,
     _choose_start_url,
     _is_useful_browser_state_url,
+    decode_javascript_diagnostic_result,
 )
 
 

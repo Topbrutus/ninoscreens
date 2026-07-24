@@ -4,7 +4,6 @@ from typing import Any
 
 from PySide6.QtCore import QSize, QTimer
 
-
 _ICON_SIZE = QSize(16, 16)
 
 
