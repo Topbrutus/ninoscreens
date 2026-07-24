@@ -1,6 +1,17 @@
 from __future__ import annotations
 
-from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEngineScript, QWebEngineSettings
+import logging
+import os
+import urllib.parse
+from pathlib import Path
+
+from PySide6.QtWebEngineCore import (
+    QWebEngineProfile,
+    QWebEngineScript,
+    QWebEngineSettings,
+    QWebEngineUrlRequestInfo,
+    QWebEngineUrlRequestInterceptor,
+)
 
 from app.config import APP_NAME, web_profile_root
 
@@ -164,6 +175,87 @@ def _install_clipboard_write_patch(profile: QWebEngineProfile) -> None:
     profile.scripts().insert(script)
 
 
+class SecurityPolicy:
+    def __init__(self, allowed_roots: list[Path]):
+        self.allowed_roots = allowed_roots
+
+    def _is_in_allowed_roots(self, target_path_str: str) -> bool:
+        try:
+            target_path_str = urllib.parse.unquote(target_path_str)
+            if os.name == 'nt' and target_path_str.startswith('/'):
+                target_path_str = target_path_str[1:]
+
+            abs_target = os.path.normcase(os.path.abspath(os.path.normpath(target_path_str)))
+            for root in self.allowed_roots:
+                abs_root = os.path.normcase(os.path.abspath(str(root)))
+                if abs_target == abs_root or abs_target.startswith(abs_root + os.sep):
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def should_block(self, request_url: str, first_party_url: str) -> bool:
+        try:
+            req_parsed = urllib.parse.urlparse(request_url)
+            first_parsed = urllib.parse.urlparse(first_party_url)
+        except Exception:
+            return True
+
+        req_scheme = req_parsed.scheme.lower()
+        first_scheme = first_parsed.scheme.lower()
+
+        if req_scheme != "file":
+            return False
+
+        if first_scheme in ("http", "https", "ws", "wss"):
+            return True
+
+        if not self._is_in_allowed_roots(req_parsed.path):
+            return True
+
+        return False
+
+class SecurityInterceptor(QWebEngineUrlRequestInterceptor):
+    def __init__(self, policy: SecurityPolicy, parent=None):
+        super().__init__(parent)
+        self.policy = policy
+        self.logger = logging.getLogger(__name__)
+
+    def interceptRequest(self, info: QWebEngineUrlRequestInfo) -> None:
+        try:
+            req_url = info.requestUrl().toString()
+            first_url = info.firstPartyUrl().toString()
+
+            if self.policy.should_block(req_url, first_url):
+                req_scheme = info.requestUrl().scheme()
+                first_scheme = info.firstPartyUrl().scheme()
+                self.logger.warning("BLOCK request: source_scheme=%s target_scheme=%s", first_scheme, req_scheme)
+                info.block(True)
+        except RuntimeError:
+            pass
+
+_SHARED_INTERCEPTOR: SecurityInterceptor | None = None
+
+def apply_security_configuration(profile: QWebEngineProfile) -> None:
+    global _SHARED_INTERCEPTOR
+
+    settings = profile.settings()
+
+    if hasattr(QWebEngineSettings.WebAttribute, 'WebSecurityEnabled'):
+        settings.setAttribute(QWebEngineSettings.WebAttribute.WebSecurityEnabled, True)
+    if hasattr(QWebEngineSettings.WebAttribute, 'LocalContentCanAccessFileUrls'):
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, False)
+    if hasattr(QWebEngineSettings.WebAttribute, 'LocalContentCanAccessRemoteUrls'):
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, False)
+
+    if _SHARED_INTERCEPTOR is None:
+        assets_root = Path(__file__).resolve().parent / "assets"
+        policy = SecurityPolicy([assets_root])
+        _SHARED_INTERCEPTOR = SecurityInterceptor(policy)
+
+    profile.setUrlRequestInterceptor(_SHARED_INTERCEPTOR)
+    profile._nino_security_interceptor = _SHARED_INTERCEPTOR
+
 def build_shared_profile(parent) -> QWebEngineProfile:
     """
     Build a single shared profile for the nine tiles.
@@ -191,5 +283,7 @@ def build_shared_profile(parent) -> QWebEngineProfile:
     settings.setAttribute(QWebEngineSettings.WebAttribute.PdfViewerEnabled, True)
     settings.setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
     settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanAccessClipboard, False)
+
+    apply_security_configuration(profile)
 
     return profile
