@@ -6,8 +6,16 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl, QUrlQuery, Signal
 from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
-from PySide6.QtWebEngineCore import QWebEngineSettings
-from PySide6.QtWebEngineWidgets import QWebEngineView
+_WEBENGINE_FRONTEND_REQUESTED = (
+    os.name == "nt"
+    or os.environ.get("NINO_TERMINAL_FRONTEND", "").strip().lower() == "web"
+)
+if _WEBENGINE_FRONTEND_REQUESTED:
+    from PySide6.QtWebEngineCore import QWebEngineSettings
+    from PySide6.QtWebEngineWidgets import QWebEngineView
+else:
+    QWebEngineSettings = None
+    QWebEngineView = None
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
