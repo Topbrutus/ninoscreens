@@ -30,6 +30,7 @@ from app.config import (
     TILES_PER_PAGE,
 )
 from app.runtime_paths import run_project_root
+from app.terminal import TerminalRuntime
 from app.session_store import load_session_payload, save_session_payload, serialize_app_state
 from app.state import AppState, TileState
 from app.web_profile import build_shared_profile
@@ -37,6 +38,7 @@ from app.widgets.dashboard_grid import DashboardGrid
 from app.widgets.focus_view import FocusView
 from app.widgets.page_matrix import PageMatrix
 from app.widgets.run_workspace import RunWorkspace
+from app.widgets.terminal_workspace import TerminalWorkspace
 from app.widgets.web_tile import WebTile
 
 
@@ -69,6 +71,7 @@ class MainWindow(QMainWindow):
             self.app_state.tiles = [TileState(tile_id=i) for i in range(TILE_COUNT)]
 
         self.profile = build_shared_profile(self)
+        self.terminal_runtime = TerminalRuntime(start_dir=Path(__file__).resolve().parents[2])
 
         self.tiles: dict[int, WebTile] = {}
         self.page_grids: list[DashboardGrid] = []
@@ -172,7 +175,12 @@ class MainWindow(QMainWindow):
 
         self.run_workspace = RunWorkspace()
         self.run_workspace.prompt_submitted.connect(self.on_run_prompt_submitted)
-        self.page_stack.addWidget(self.run_workspace)
+
+        self.terminal_workspace = TerminalWorkspace(self.terminal_runtime)
+        self.terminal_workspace.back_requested.connect(
+            lambda: self.show_tile_page(self.app_state.current_page_index)
+        )
+        self.page_stack.addWidget(self.terminal_workspace)
 
         self.focus_view = FocusView()
         self.focus_view.tile_switch_requested.connect(self.set_split_tile)
@@ -231,9 +239,11 @@ class MainWindow(QMainWindow):
         self._refresh_top_state()
 
     def show_run_page(self) -> None:
+        self.terminal_workspace.activate()
         self.app_state.active_view = "run"
         if self._focused_tile_id is None:
             self._show_active_workspace()
+        self.terminal_workspace.request_terminal_focus()
         self._refresh_top_state()
 
     def on_run_prompt_submitted(self, text: str) -> None:
@@ -543,7 +553,7 @@ class MainWindow(QMainWindow):
             else:
                 self.mode_label.setText(f"Focus - tile {self._focused_tile_id + 1}")
         elif self.app_state.active_view == "run":
-            self.mode_label.setText("RUN / Corvo")
+            self.mode_label.setText("Terminal / LinuxIA")
         else:
             self.mode_label.setText(
                 f"Page {self.app_state.current_page_index + 1} / {PAGE_COUNT}"
@@ -664,9 +674,14 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event) -> None:
         self.app_state.window_size = self.size()
+        if getattr(self, "app_state", None) is not None and self.app_state.active_view == "run":
+            terminal_workspace = getattr(self, "terminal_workspace", None)
+            if terminal_workspace is not None:
+                terminal_workspace.fit_terminal()
         self._schedule_session_save()
         super().resizeEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._save_session()
+        self.terminal_workspace.shutdown()
         super().closeEvent(event)
