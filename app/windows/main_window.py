@@ -25,6 +25,7 @@ from app.config import (
     MINIMUM_WINDOW_SIZE,
     PAGE_COUNT,
     RUN_PAGE_INDEX,
+    SESSION_SAVE_DEBOUNCE_MS,
     TILE_COUNT,
     TILES_PER_PAGE,
 )
@@ -52,6 +53,12 @@ def _coerce_bool(value: object) -> bool:
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+
+        self._session_save_timer = QTimer(self)
+        self._session_save_timer.setSingleShot(True)
+        self._session_save_timer.setInterval(SESSION_SAVE_DEBOUNCE_MS)
+        self._session_save_timer.timeout.connect(self._save_session)
+
         self.setWindowTitle(APP_NAME)
         self.resize(DEFAULT_WINDOW_SIZE)
         self.setMinimumSize(MINIMUM_WINDOW_SIZE)
@@ -549,6 +556,7 @@ class MainWindow(QMainWindow):
             run_active=self.app_state.active_view == "run",
         )
         self.focus_exit_button.setEnabled(self._focused_tile_id is not None)
+        self._schedule_session_save()
 
     def _on_split_visibility_changed(self, visible: bool) -> None:
         if not visible:
@@ -564,6 +572,7 @@ class MainWindow(QMainWindow):
             self.showFullScreen()
             self.fullscreen_button.setText("Quitter plein écran")
         self.app_state.is_fullscreen = self.isFullScreen()
+        self._schedule_session_save()
 
     def on_tile_state_changed(self, _state: object) -> None:
         self._sync_focus_flags()
@@ -640,6 +649,9 @@ class MainWindow(QMainWindow):
             self.showNormal()
             self.fullscreen_button.setText("Plein écran")
 
+    def _schedule_session_save(self) -> None:
+        self._session_save_timer.start()
+
     def _save_session(self) -> None:
         self.app_state.window_size = self.size()
         self.app_state.focused_tile_id = self._focused_tile_id
@@ -651,6 +663,7 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event) -> None:
         self.app_state.window_size = self.size()
+        self._schedule_session_save()
         super().resizeEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
