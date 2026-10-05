@@ -332,11 +332,11 @@ class MainWindow(QMainWindow):
         if not self.focus_view.is_split_panel_visible():
             if not self._restore_saved_split_for_tile(self._focused_tile_id):
                 self.focus_view.show_split_panel()
-        elif self._split_tile_id is not None:
-            self._return_split_tile_to_grid(self._split_tile_id)
-            self._split_tile_id = None
-            self.focus_view.show_split_panel()
         else:
+            if self._split_tile_id is not None:
+                self._return_split_tile_to_grid(self._split_tile_id)
+                self._split_tile_id = None
+            self._forget_split_pairs_for_tile(self._focused_tile_id)
             self.focus_view.hide_split_panel()
 
         self._sync_focus_flags()
@@ -469,6 +469,15 @@ class MainWindow(QMainWindow):
             tile,
             tile_id % TILES_PER_PAGE,
         )
+
+    def _forget_split_pairs_for_tile(self, tile_id: int) -> None:
+        stale_tile_ids = [
+            key
+            for key, paired_tile_id in self._split_pairs.items()
+            if key == tile_id or paired_tile_id == tile_id
+        ]
+        for stale_tile_id in stale_tile_ids:
+            self._split_pairs.pop(stale_tile_id, None)
 
     def _clear_split_tile(self) -> None:
         if self._split_tile_id is None:
