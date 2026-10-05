@@ -301,7 +301,7 @@ class FocusSplit:
     def return_to_selector(self) -> None:
         if self.primary_tile_id is None:
             return
-        self.states[self.primary_tile_id = None
+        self.states[self.primary_tile_id] = None
         self.show_selector(self.primary_tile_id)
         self.refresh_split_buttons()
 
