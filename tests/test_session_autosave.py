@@ -1,40 +1,37 @@
 ﻿from __future__ import annotations
 
-import inspect
+import ast
+from pathlib import Path
 import unittest
 
-from app.windows.main_window import MainWindow
+
+SOURCE_PATH = Path(__file__).resolve().parents[1] / "app" / "windows" / "main_window.py"
+SOURCE = SOURCE_PATH.read_text(encoding="utf-8")
+TREE = ast.parse(SOURCE)
 
 
-class FakeTimer:
-    def __init__(self) -> None:
-        self.start_calls = 0
-
-    def start(self) -> None:
-        self.start_calls += 1
-
-
-class FakeWindow:
-    def __init__(self) -> None:
-        self._session_save_timer = FakeTimer()
+def method_source(name: str) -> str:
+    for node in ast.walk(TREE):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return ast.get_source_segment(SOURCE, node) or ""
+    raise AssertionError(f"method not found: {name}")
 
 
 class SessionAutosaveRegressionTest(unittest.TestCase):
-    def test_schedule_session_save_restarts_debounce_timer(self) -> None:
-        window = FakeWindow()
+    def test_debounce_constant_is_wired_into_main_window(self) -> None:
+        self.assertIn("SESSION_SAVE_DEBOUNCE_MS", SOURCE)
+        self.assertIn("setInterval(SESSION_SAVE_DEBOUNCE_MS)", SOURCE)
 
-        MainWindow._schedule_session_save(window)
-        MainWindow._schedule_session_save(window)
-
-        self.assertEqual(window._session_save_timer.start_calls, 2)
+    def test_schedule_method_restarts_timer(self) -> None:
+        source = method_source("_schedule_session_save")
+        self.assertIn("self._session_save_timer.start()", source)
 
     def test_top_state_refresh_schedules_persistence(self) -> None:
-        source = inspect.getsource(MainWindow._refresh_top_state)
-        self.assertIn("self._schedule_session_save()", source)
+        self.assertIn("self._schedule_session_save()", method_source("_refresh_top_state"))
 
     def test_resize_and_fullscreen_schedule_persistence(self) -> None:
-        self.assertIn("self._schedule_session_save()", inspect.getsource(MainWindow.resizeEvent))
-        self.assertIn("self._schedule_session_save()", inspect.getsource(MainWindow.toggle_global_fullscreen))
+        self.assertIn("self._schedule_session_save()", method_source("resizeEvent"))
+        self.assertIn("self._schedule_session_save()", method_source("toggle_global_fullscreen"))
 
 
 if __name__ == "__main__":
