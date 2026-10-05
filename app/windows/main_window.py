@@ -29,6 +29,7 @@ from app.config import (
     TILE_COUNT,
     TILES_PER_PAGE,
 )
+from app.runtime_paths import run_project_root
 from app.session_store import load_session_payload, save_session_payload, serialize_app_state
 from app.state import AppState, TileState
 from app.web_profile import build_shared_profile
@@ -236,7 +237,7 @@ class MainWindow(QMainWindow):
         self._refresh_top_state()
 
     def on_run_prompt_submitted(self, text: str) -> None:
-        project_root = Path("/home/gaby/MonDeuxiemeProjet")
+        project_root = run_project_root()
         cli_path = project_root / "src" / "run_cli.py"
 
         if not cli_path.exists():
