@@ -1,28 +1,33 @@
-# Multi-Site Dashboard
+# NinoScreen — Multi-Site Dashboard
 
-Application desktop locale Python / PySide6 / Qt Widgets / Qt WebEngine pour afficher et piloter 9 pages web indépendantes dans une grille 3x3.
+Application Python / PySide6 / Qt Widgets / Qt WebEngine conçue pour garder plusieurs services web visibles et utilisables dans un même cockpit.
+
+L’état actuel du projet utilise **36 tuiles web** réparties sur **3 pages de 12 tuiles**, avec une grille **3 × 4 par page**.
 
 ## Fonctionnalités principales
 
-- 9 carreaux indépendants, tous vides au démarrage la première fois
-- Chargement d'URL par carreau avec normalisation robuste
-- Navigation indépendante : retour, avancer, recharger
-- Zoom indépendant par carreau
-- **Mémoire persistante automatique** des pages ouvertes, par carreau
-- **Restauration au démarrage** des URLs et du zoom de chaque carreau
-- **Restauration du mode focus** si l'application a été fermée en focus
-- **Barre mémoire 1 à 9** dans l'en-tête pour accéder rapidement aux carreaux
-- **Bouton `🔄 Tout`** pour recharger tous les carreaux chargés
-- Rail latéral de miniatures en mode focus
-- Voyants d'état sur les miniatures
-- Fermeture d'un carreau et retour à l'état vide
-- Plein écran global de l'application
-- Architecture modulaire, maintenable et extensible
+- 36 tuiles web indépendantes
+- 3 pages × 12 tuiles
+- chargement d’URL par tuile avec normalisation
+- navigation indépendante : retour, avancer, recharger
+- zoom indépendant par tuile
+- profil Qt WebEngine partagé pour cookies/cache/sessions web
+- mode focus
+- mode Split avec deux tuiles côte à côte
+- restauration du focus et de la disposition logique
+- page RUN / Corvo séparée
+- persistance des URL, zooms, page courante, focus, plein écran et taille de fenêtre
+- **autosauvegarde débouncée pendant que l’application reste ouverte**
+- sauvegarde finale lors de la fermeture
+- miniatures et état des tuiles en mode focus
 
 ## Dépendances
 
-- Python 3.11+ recommandé
-- PySide6 avec Qt WebEngine
+- Python 3.11+ ; Python 3.12 validé sur le VPS Château Astra
+- `PySide6==6.6.3.1`
+- `keyring>=25.0`
+
+`PySide6 6.6.3.1` est volontairement épinglé : cette version a été validée sur le CPU virtuel du VPS Château Astra, alors qu’une version PySide6 plus récente testée pendant le déploiement exigeait des extensions CPU non exposées par ce serveur.
 
 ## Installation
 
@@ -37,7 +42,7 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-### macOS / Linux
+### Linux / macOS
 
 ```bash
 source .venv/bin/activate
@@ -50,83 +55,105 @@ pip install -r requirements.txt
 python main.py
 ```
 
-## Notes de conception
+## Sessions web
 
-### Sessions web
+NinoScreen utilise actuellement **un profil WebEngine partagé entre les 36 tuiles**. Les cookies et sessions web vivent donc dans le profil du navigateur, tandis que le fichier de session NinoScreen conserve l’état logique de l’interface.
 
-La V1 utilise **un profil WebEngine partagé** entre les 9 carreaux.  
-Cela permet un comportement cohérent pour les cookies, le cache et les sessions, tout en gardant une architecture prête à évoluer vers des profils séparés par carreau.
+Les identifiants, mots de passe, cookies et tokens ne doivent jamais être ajoutés au dépôt Git.
 
-### Persistance locale
+## Persistance locale
 
-L'application enregistre localement un fichier de session avec :
+Le fichier `dashboard_session.json` contient notamment :
 
-- les URLs actives par carreau,
-- le zoom par carreau,
-- le carreau affiché en focus,
-- la taille de la fenêtre.
+- les URL actives par tuile ;
+- le zoom par tuile ;
+- la page active ;
+- la dernière tuile sélectionnée ;
+- le focus ;
+- l’état Split visible ;
+- le plein écran ;
+- la taille de fenêtre.
 
-Au prochain démarrage, la disposition logique est restaurée.
+Depuis le correctif d’autosauvegarde, cet état est écrit **pendant l’exécution** avec un délai de debounce, au lieu de dépendre uniquement de `closeEvent()`.
 
-### Popups / nouvelles fenêtres
+## Mode Château Astra / VPS
 
-Les demandes `window.open()` et ouvertures de nouvelle fenêtre sont **redirigées dans le carreau courant** au lieu d'ouvrir une nouvelle fenêtre native non contrôlée.  
-Cela garde la maîtrise de l'interface.
+NinoScreen peut fonctionner comme cockpit distant sur un VPS sans installation graphique système globale.
 
-### Plein écran demandé par les sites
-
-Le plein écran déclenché par une page web est **refusé** en V1 pour éviter les conflits avec :
-
-- le mode focus de l'application,
-- le plein écran global de l'application.
-
-### Miniatures
-
-Les miniatures sont des **captures pragmatiques du widget visible**.  
-Quand un carreau n'est plus visible (par exemple si un autre carreau est affiché en mode focus), sa miniature conserve la dernière capture connue jusqu'à la prochaine mise à jour visible.  
-C'est un compromis volontaire entre coût CPU/GPU, stabilité et utilité.
-
-## Structure
+L’instance Château Astra validée utilise une pile user-space :
 
 ```text
-multisite_dashboard/
-  main.py
-  requirements.txt
-  README.md
-  app/
-    __init__.py
-    config.py
-    session_store.py
-    styles.py
-    state.py
-    url_utils.py
-    web_profile.py
-    widgets/
-      __init__.py
-      dashboard_grid.py
-      focus_view.py
-      thumbnail_rail.py
-      web_tile.py
-    windows/
-      __init__.py
-      main_window.py
+NinoScreen / Qt WebEngine
+        ↓
+TigerVNC local
+        ↓
+noVNC + websockify authentifié
+        ↓
+porte HTTPS / réseau privé
+        ↓
+Vitrine Château Astra
 ```
+
+Principes de sécurité retenus :
+
+- VNC lié à localhost ;
+- corpus Château hors du webroot public ;
+- authentification séparée du cockpit ;
+- aucun secret dans la vitrine ;
+- profil navigateur persistant stocké hors du dépôt ;
+- Chromium/QtWebEngine garde son sandbox quand le runtime le permet.
+
+La vitrine publique et le cockpit privé restent deux couches différentes : **la vitrine montre, le cockpit agit**.
+
+## Popups / nouvelles fenêtres
+
+Les demandes de nouvelle fenêtre web sont redirigées dans la logique contrôlée par NinoScreen plutôt que de laisser proliférer des fenêtres natives indépendantes.
+
+## Plein écran
+
+Le plein écran global de NinoScreen est distinct du plein écran demandé par un site web afin d’éviter les conflits avec le mode focus et le mode Split.
+
+## Structure principale
+
+```text
+ninoscreens/
+├── main.py
+├── requirements.txt
+├── README.md
+├── app/
+│   ├── config.py
+│   ├── session_store.py
+│   ├── state.py
+│   ├── web_profile.py
+│   ├── focus_split_runtime.py
+│   ├── widgets/
+│   └── windows/
+│       └── main_window.py
+└── tests/
+    ├── test_split_toggle.py
+    └── test_session_autosave.py
+```
+
+## Tests ciblés actuels
+
+- régression du bouton Split ON/OFF ;
+- nettoyage des associations Split fantômes ;
+- câblage de l’autosauvegarde débouncée ;
+- compilation Python de l’application.
 
 ## Scénarios manuels recommandés
 
-1. Lancer l'application sans charger de site
-2. Charger une seule URL
-3. Charger 9 URLs
-4. Vérifier que la barre mémoire 1-9 reflète les carreaux chargés
-5. Utiliser les boutons 1-9 pour basculer rapidement en focus
-6. Tester le bouton `💾` dans un carreau pour forcer une sauvegarde immédiate
-7. Tester `🔄 Tout`
-8. Fermer l'application avec plusieurs pages ouvertes
-9. Relancer et vérifier la restauration
-10. Tester une URL invalide
-11. Utiliser retour / avancer / recharger
-12. Tester le zoom
-13. Fermer un carreau
-14. Revenir à la grille
-15. Redimensionner la fenêtre
-16. Passer en plein écran global puis revenir
+1. Lancer NinoScreen avec une session vide.
+2. Charger plusieurs sites sur différentes pages.
+3. Vérifier navigation et zoom indépendants.
+4. Passer d’une page à l’autre.
+5. Entrer en focus sur une tuile.
+6. Activer puis désactiver Split.
+7. Changer la tuile secondaire du Split.
+8. Vérifier qu’aucune association Split fantôme ne subsiste.
+9. Redimensionner la fenêtre.
+10. Activer/désactiver le plein écran.
+11. Vérifier que `dashboard_session.json` est créé **sans fermer l’application**.
+12. Relancer NinoScreen et confirmer la restauration de la session.
+13. Sur VPS, vérifier que VNC n’est pas exposé directement à Internet.
+14. Vérifier l’accès au cockpit via la porte privée/authentifiée.
