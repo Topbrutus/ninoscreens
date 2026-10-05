@@ -499,6 +499,39 @@ class _TerminalServerThread(threading.Thread):
             return None
         return self.sessions.get(session_id)
 
+    async def session_buffer_copy(self, session_id: str) -> str:
+        session = self.sessions.get(session_id)
+        if session is None:
+            return ""
+        return session.buffer_copy()
+
+    async def send_input(self, session_id: str, data: str) -> bool:
+        session = self.sessions.get(session_id)
+        process = session.process if session is not None else None
+        if process is None or not process.isalive():
+            return False
+        if data:
+            process.write(data)
+        return True
+
+    async def send_interrupt(self, session_id: str) -> bool:
+        session = self.sessions.get(session_id)
+        process = session.process if session is not None else None
+        if process is None or not process.isalive():
+            return False
+        process.sendintr()
+        return True
+
+    async def resize_session(self, session_id: str, rows: int, cols: int) -> bool:
+        session = self.sessions.get(session_id)
+        process = session.process if session is not None else None
+        if process is None or not process.isalive():
+            return False
+        rows = max(10, min(200, int(rows)))
+        cols = max(20, min(320, int(cols)))
+        process.setwinsize(rows, cols)
+        return True
+
     async def create_session(self) -> dict[str, Any]:
         self._session_counter += 1
         session_prefix = "powershell" if TERMINAL_TYPE == "powershell" else "shell"
@@ -676,6 +709,22 @@ class TerminalRuntime:
     def session_snapshot(self, session_id: str) -> dict[str, Any] | None:
         self.ensure_started()
         return self._call_threadsafe(lambda thread: thread.session_snapshot(session_id))
+
+    def session_buffer(self, session_id: str) -> str:
+        self.ensure_started()
+        return self._call_threadsafe(lambda thread: thread.session_buffer_copy(session_id))
+
+    def send_input(self, session_id: str, data: str) -> bool:
+        self.ensure_started()
+        return self._call_threadsafe(lambda thread: thread.send_input(session_id, data))
+
+    def send_interrupt(self, session_id: str) -> bool:
+        self.ensure_started()
+        return self._call_threadsafe(lambda thread: thread.send_interrupt(session_id))
+
+    def resize_session(self, session_id: str, rows: int, cols: int) -> bool:
+        self.ensure_started()
+        return self._call_threadsafe(lambda thread: thread.resize_session(session_id, rows, cols))
 
     def _call_threadsafe(
         self,

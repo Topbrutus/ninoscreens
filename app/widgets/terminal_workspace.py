@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl, QUrlQuery, Signal
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.terminal import TerminalRuntime, TerminalRuntimeError
+from app.widgets.native_terminal_view import NativeTerminalView
 
 
 class TerminalWorkspace(QFrame):
@@ -29,12 +31,17 @@ class TerminalWorkspace(QFrame):
     def __init__(self, runtime: TerminalRuntime, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.runtime = runtime
+        frontend = os.environ.get("NINO_TERMINAL_FRONTEND", "").strip().lower()
+        self._use_web_terminal = frontend == "web" or (frontend != "native" and os.name == "nt")
         self._terminal_loaded = False
         self._web_ready = False
         self._pending_session_id: str | None = None
         self._selected_session_id: str | None = None
         self._auto_create_initial_session = True
         self._syncing_tabs = False
+        self._native_poll_timer = QTimer(self)
+        self._native_poll_timer.setInterval(120)
+        self._native_poll_timer.timeout.connect(self._refresh_native_terminal)
         self._focus_timer = QTimer(self)
         self._focus_timer.setSingleShot(True)
         self._focus_timer.timeout.connect(self._apply_terminal_focus)
@@ -134,16 +141,25 @@ class TerminalWorkspace(QFrame):
         placeholder_layout.addWidget(self.placeholder_body)
         placeholder_layout.addStretch(1)
 
-        self.web_view = QWebEngineView()
-        self.web_view.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
-        settings = self.web_view.settings()
-        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
-        settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanAccessClipboard, False)
-        settings.setAttribute(QWebEngineSettings.WebAttribute.FullScreenSupportEnabled, False)
-        self.web_view.loadFinished.connect(self._on_terminal_page_loaded)
-
+        self.web_view = None
+        self.native_view = None
         self.view_stack.addWidget(self.placeholder_frame)
-        self.view_stack.addWidget(self.web_view)
+        if self._use_web_terminal:
+            self.web_view = QWebEngineView()
+            self.web_view.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
+            settings = self.web_view.settings()
+            settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+            settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanAccessClipboard, False)
+            settings.setAttribute(QWebEngineSettings.WebAttribute.FullScreenSupportEnabled, False)
+            self.web_view.loadFinished.connect(self._on_terminal_page_loaded)
+            self.view_stack.addWidget(self.web_view)
+        else:
+            self.native_view = NativeTerminalView()
+            self.native_view.input_requested.connect(self._send_native_input)
+            self.native_view.interrupt_requested.connect(self.send_interrupt)
+            self.native_view.paste_requested.connect(self.paste_clipboard)
+            self.view_stack.addWidget(self.native_view)
+            self._web_ready = True
 
         self.copy_shortcut = QShortcut(QKeySequence("Ctrl+Shift+C"), self)
         self.copy_shortcut.activated.connect(self.copy_selection)
@@ -173,7 +189,11 @@ class TerminalWorkspace(QFrame):
 
         self.add_tab_button.setEnabled(True)
         if not self._terminal_loaded:
-            self._load_terminal_page(service_info["ws_url"])
+            if self._use_web_terminal:
+                self._load_terminal_page(service_info["ws_url"])
+            else:
+                self._web_ready = True
+                self._native_poll_timer.start()
             self._terminal_loaded = True
 
         sessions = self.runtime.list_sessions()
@@ -195,7 +215,7 @@ class TerminalWorkspace(QFrame):
             )
             return True
 
-        self.view_stack.setCurrentWidget(self.web_view)
+        self.view_stack.setCurrentWidget(self._terminal_widget())
         self._attach_selected_session()
         self.request_terminal_focus()
         return True
@@ -209,6 +229,7 @@ class TerminalWorkspace(QFrame):
         self._refresh_status()
 
     def shutdown(self) -> None:
+        self._native_poll_timer.stop()
         self.runtime.shutdown()
         self._terminal_loaded = False
         self._web_ready = False
@@ -230,7 +251,7 @@ class TerminalWorkspace(QFrame):
 
         self._auto_create_initial_session = False
         self._sync_tabs_from_sessions(self.runtime.list_sessions(), session["session_id"])
-        self.view_stack.setCurrentWidget(self.web_view)
+        self.view_stack.setCurrentWidget(self._terminal_widget())
         self._attach_selected_session()
         self._refresh_status()
         self.request_terminal_focus()
@@ -273,38 +294,71 @@ class TerminalWorkspace(QFrame):
             )
             return
 
-        self.view_stack.setCurrentWidget(self.web_view)
+        self.view_stack.setCurrentWidget(self._terminal_widget())
         self._attach_selected_session()
         self.request_terminal_focus()
 
     def copy_selection(self) -> None:
-        self.web_view.page().runJavaScript("window.ninoTerminalApi?.getSelection?.() ?? ''", self._store_selection)
+        if self._use_web_terminal and self.web_view is not None:
+            self.web_view.page().runJavaScript("window.ninoTerminalApi?.getSelection?.() ?? ''", self._store_selection)
+            return
+        if self.native_view is not None:
+            self.native_view.copy()
 
     def paste_clipboard(self) -> None:
-        clipboard = QGuiApplication.clipboard()
-        text = clipboard.text()
+        text = QGuiApplication.clipboard().text()
         if not text:
             return
-        self.web_view.page().runJavaScript(
-            f"window.ninoTerminalApi?.pasteText?.({json.dumps(text)});"
-        )
+        if self._use_web_terminal and self.web_view is not None:
+            self.web_view.page().runJavaScript(f"window.ninoTerminalApi?.pasteText?.({json.dumps(text)});")
+            return
+        self._send_native_input(text)
 
     def send_line(self, text: str) -> None:
-        self.web_view.page().runJavaScript(
-            f"window.ninoTerminalApi?.sendLine?.({json.dumps(text)});"
-        )
+        if self._use_web_terminal and self.web_view is not None:
+            self.web_view.page().runJavaScript(f"window.ninoTerminalApi?.sendLine?.({json.dumps(text)});")
+            return
+        self._send_native_input(f"{text}\r")
 
     def send_interrupt(self) -> None:
-        self.web_view.page().runJavaScript("window.ninoTerminalApi?.sendInterrupt?.();")
+        if self._use_web_terminal and self.web_view is not None:
+            self.web_view.page().runJavaScript("window.ninoTerminalApi?.sendInterrupt?.();")
+            return
+        session_id = self._selected_session_id
+        if session_id:
+            self.runtime.send_interrupt(session_id)
 
     def terminal_dump(self, callback) -> None:
-        self.web_view.page().runJavaScript("window.ninoTerminalApi?.dumpText?.() ?? ''", callback)
+        if self._use_web_terminal and self.web_view is not None:
+            self.web_view.page().runJavaScript("window.ninoTerminalApi?.dumpText?.() ?? ''", callback)
+            return
+        callback(self.native_view.dump_text() if self.native_view is not None else "")
 
     def fit_terminal(self) -> None:
-        self.web_view.page().runJavaScript("window.ninoTerminalApi?.fitNow?.();")
+        if self._use_web_terminal and self.web_view is not None:
+            self.web_view.page().runJavaScript("window.ninoTerminalApi?.fitNow?.();")
+            return
+        session_id = self._selected_session_id
+        if not session_id or self.native_view is None:
+            return
+        metrics = self.native_view.fontMetrics()
+        char_width = max(1, metrics.horizontalAdvance("M"))
+        line_height = max(1, metrics.lineSpacing())
+        cols = max(20, self.native_view.viewport().width() // char_width)
+        rows = max(10, self.native_view.viewport().height() // line_height)
+        self.runtime.resize_session(session_id, rows, cols)
 
     def request_terminal_focus(self) -> None:
         self._focus_timer.start(0)
+
+    def _send_native_input(self, data: str) -> None:
+        session_id = self._selected_session_id
+        if not session_id or not data:
+            return
+        try:
+            self.runtime.send_input(session_id, data)
+        except TerminalRuntimeError as exc:
+            self.status_label.setText(f"MODE MANUEL • Entrée terminal impossible: {exc}")
 
     def current_session_id(self) -> str | None:
         return self._selected_session_id
@@ -324,7 +378,16 @@ class TerminalWorkspace(QFrame):
             return
         QGuiApplication.clipboard().setText(text)
 
+    def _terminal_widget(self) -> QWidget:
+        if self._use_web_terminal and self.web_view is not None:
+            return self.web_view
+        if self.native_view is not None:
+            return self.native_view
+        return self.placeholder_frame
+
     def _load_terminal_page(self, ws_url: str) -> None:
+        if not self._use_web_terminal or self.web_view is None:
+            return
         html_path = Path(__file__).resolve().parents[1] / "assets" / "terminal" / "terminal.html"
         url = QUrl.fromLocalFile(str(html_path))
         query = QUrlQuery()
@@ -356,7 +419,7 @@ class TerminalWorkspace(QFrame):
             )
             return
 
-        self.view_stack.setCurrentWidget(self.web_view)
+        self.view_stack.setCurrentWidget(self._terminal_widget())
         self._attach_selected_session()
         self.request_terminal_focus()
 
@@ -408,19 +471,35 @@ class TerminalWorkspace(QFrame):
         if not session_id:
             return
         self._pending_session_id = session_id
-        if not self._web_ready:
-            return
-        self.web_view.page().runJavaScript(
-            f"window.ninoTerminalApi?.attachSession?.({json.dumps(session_id)});"
-        )
-        self.web_view.page().runJavaScript("window.ninoTerminalApi?.fitNow?.();")
+        if self._use_web_terminal:
+            if not self._web_ready or self.web_view is None:
+                return
+            self.web_view.page().runJavaScript(f"window.ninoTerminalApi?.attachSession?.({json.dumps(session_id)});")
+            self.web_view.page().runJavaScript("window.ninoTerminalApi?.fitNow?.();")
+        else:
+            self._refresh_native_terminal()
+            self.fit_terminal()
         self._pending_session_id = None
 
     def _apply_terminal_focus(self) -> None:
-        if self.view_stack.currentWidget() is not self.web_view:
-            self.view_stack.setCurrentWidget(self.web_view)
-        self.web_view.setFocus(Qt.FocusReason.OtherFocusReason)
-        self.web_view.page().runJavaScript("window.ninoTerminalApi?.focusInput?.();")
+        widget = self._terminal_widget()
+        if self.view_stack.currentWidget() is not widget:
+            self.view_stack.setCurrentWidget(widget)
+        widget.setFocus(Qt.FocusReason.OtherFocusReason)
+        if self._use_web_terminal and self.web_view is not None:
+            self.web_view.page().runJavaScript("window.ninoTerminalApi?.focusInput?.();")
+
+    def _refresh_native_terminal(self) -> None:
+        if self._use_web_terminal or self.native_view is None:
+            return
+        session_id = self._selected_session_id
+        if not session_id:
+            return
+        try:
+            raw = self.runtime.session_buffer(session_id)
+        except TerminalRuntimeError:
+            return
+        self.native_view.update_from_raw(raw)
 
     def _refresh_status(self) -> None:
         service_info = self.runtime.snapshot()
