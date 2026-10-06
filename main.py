@@ -8,6 +8,7 @@ from app.config import APP_NAME
 from app.focus_split_runtime import apply_runtime_focus_split
 from app.matrix_icon_fixes import apply_runtime_matrix_icon_fixes
 from app.styles import build_app_stylesheet
+from app.terminal import TerminalRuntimeError
 from app.text_fixes import apply_runtime_text_fixes
 from app.windows.main_window import MainWindow
 
@@ -21,6 +22,11 @@ def main() -> int:
     app.setStyleSheet(build_app_stylesheet())
 
     window = MainWindow()
+    try:
+        window.terminal_runtime.ensure_started()
+    except TerminalRuntimeError as exc:
+        print(f"Nino TERM backend unavailable at startup: {exc}", file=sys.stderr)
+
     apply_runtime_text_fixes(window)
     apply_runtime_matrix_icon_fixes(window)
     apply_runtime_focus_split(window)
