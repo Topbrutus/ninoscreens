@@ -35,7 +35,7 @@ def main() -> int:
     apply_runtime_focus_split(window)
 
     brutus_watch = BrutusRarityWatchController(
-        os.environ.get("NINO_BRUTUS_STATUS_URL", "http://127.0.0.1:8778/api/status"),
+        os.environ.get("NINO_BRUTUS_STATUS_URL", "http://127.0.0.1:8788/api/status"),
         parent=window,
     )
 
