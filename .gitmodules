@@ -1,0 +1,4 @@
+[submodule "linuxia-cli/antmux"]
+	path = linuxia-cli/antmux
+	url = https://github.com/Topbrutus/Antmux.git
+	branch = linuxia-cli-scroll-integration
